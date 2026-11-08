@@ -12,7 +12,7 @@ const png = Buffer.from(
 async function signIn(page: Page, url: string, email: string) {
   await page.goto(url);
   await page.getByRole("textbox", { name: "Email address" }).fill(email);
-  await page.getByRole("button", { name: "Email me a code" }).click();
+  await page.getByRole("button", { name: "Send sign-in code" }).click();
   await expect(page.getByRole("heading", { name: "Check your inbox" })).toBeVisible();
   let otp: string | undefined;
   await expect.poll(async () => {
@@ -86,7 +86,7 @@ test("a mobile group runs two private annual exchanges and shares Little Ones gi
       await participant.getByLabel("Your display name").fill(name);
       await participant.getByRole("button", { name: "Join group" }).click();
       await expect(participant).toHaveURL(/\/exchange$/);
-      await expect(participant.getByRole("heading", { name: "Organizer desk" })).toHaveCount(0);
+      await expect(participant.getByRole("heading", { name: "Organizer tools" })).toHaveCount(0);
     }
 
     for (const [name, participant] of pages) await addressAndWish(participant, name);
@@ -126,6 +126,9 @@ test("a mobile group runs two private annual exchanges and shares Little Ones gi
       for (const [giver, participant] of pages) {
         await participant.reload();
         const recipient = participant.locator("#recipient");
+        await expect(recipient.locator(".recipient-name")).toBeHidden();
+        await expect(recipient.locator("address")).toBeHidden();
+        await recipient.getByText("Unwrap match", { exact: true }).click();
         const name = await recipient.locator(".recipient-name").innerText();
         expect(name).not.toBe(giver);
         if (giver === "Alex" || giver === "Bailey") expect(["Casey", "Drew"]).toContain(name);
@@ -133,6 +136,11 @@ test("a mobile group runs two private annual exchanges and shares Little Ones gi
         await expect(recipient.getByText(`${name} wish`, { exact: true })).toBeVisible();
         const photo = await recipient.locator("img").getAttribute("src");
         expect((await participant.request.get(photo!)).status()).toBe(200);
+        if (giver === "Alex") {
+          await recipient.getByText("Hide match", { exact: true }).click();
+          await expect(recipient.locator(".recipient-name")).toBeHidden();
+          await expect(recipient.locator("address")).toBeHidden();
+        }
         pairs.set(giver, name);
         photoPaths.set(giver, photo!);
       }

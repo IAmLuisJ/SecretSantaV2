@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Form, Link, useLocation, useNavigation } from "react-router";
+import { ChristmasTree, HolidayStar, WrappedGift } from "./holiday-art";
 import type { Address, DashboardData, GiftItem, Invite, User, Values } from "./types";
 import "./styles.css";
 
@@ -22,11 +23,10 @@ type DashboardProps = {
   values: Values;
 };
 
-type IconName = "mail" | "arrow" | "gift" | "share" | "copy" | "facebook" | "pin" | "check" | "users";
+type IconName = "arrow" | "gift" | "share" | "copy" | "facebook" | "pin" | "check" | "users";
 
 function Icon({ name }: { name: IconName }) {
   const shapes: Record<IconName, ReactNode> = {
-    mail: <><rect x="2.5" y="5" width="19" height="14" rx="2" /><path d="m3.5 6 8.5 7 8.5-7" /></>,
     arrow: <><path d="M5 12h14m-6-6 6 6-6 6" /></>,
     gift: <><rect x="3" y="8" width="18" height="4" rx="1" /><path d="M5 12v8h14v-8M12 8v12M12 8H8.5A2.5 2.5 0 1 1 11 5.5L12 8Zm0 0h3.5A2.5 2.5 0 1 0 13 5.5L12 8Z" /></>,
     share: <><path d="M12 15V3m-4 4 4-4 4 4M5 12v8h14v-8" /></>,
@@ -43,48 +43,6 @@ function Icon({ name }: { name: IconName }) {
   );
 }
 
-function Envelope() {
-  return (
-    <svg className="envelope" viewBox="0 0 455 318" aria-hidden="true">
-      <defs>
-        <pattern id="airmail-stripes" width="38" height="38" patternUnits="userSpaceOnUse" patternTransform="rotate(44)">
-          <rect width="38" height="38" fill="#fffdf5" />
-          <rect width="10" height="38" fill="#d96249" />
-          <rect x="19" width="10" height="38" fill="#3054a7" />
-        </pattern>
-        <pattern id="stamp-holes" width="9" height="9" patternUnits="userSpaceOnUse">
-          <circle cx="4.5" cy="4.5" r="2" fill="#fffdf5" />
-        </pattern>
-      </defs>
-      <path d="M64 52v30m-15-15h30m318 119v26m-13-13h26M363 36v17m-8.5-8.5h17M40 169v15m-7.5-7.5h15" fill="none" stroke="#3054a7" strokeWidth="1.5" strokeLinecap="round" />
-      <circle cx="116" cy="35" r="2.5" fill="#d96249" />
-      <circle cx="415" cy="148" r="2.5" fill="#d96249" />
-      <circle cx="76" cy="262" r="2.5" fill="#d96249" />
-      <path d="M129 282c32 13 76 19 130 13 51-6 82-17 111-31" fill="none" stroke="#7e9dc3" strokeWidth="1.5" strokeDasharray="4 8" strokeLinecap="round" />
-      <g transform="rotate(-8 228 168)">
-        <rect x="80" y="82" width="308" height="184" rx="6" fill="#3054a7" opacity=".16" />
-        <rect x="69" y="72" width="308" height="184" rx="6" fill="url(#airmail-stripes)" stroke="#193d8e" strokeWidth="2" />
-        <rect x="79" y="82" width="288" height="164" rx="2" fill="#fffdf5" />
-        <path d="m80 245 86-71m200 71-86-71" fill="none" stroke="#e5dcca" strokeWidth="1.5" />
-        <path d="m79 83 139 103a9 9 0 0 0 11 0L367 83" fill="#f6efdf" stroke="#e5dcca" strokeWidth="1.5" strokeLinejoin="round" />
-        <rect x="302" y="90" width="54" height="54" fill="#d96249" />
-        <path d="M302 90h54v54h-54zM311 99v36h36V99z" fill="url(#stamp-holes)" fillRule="evenodd" />
-        <rect x="311" y="99" width="36" height="36" fill="#ad3a2b" />
-        <path d="M319 122h20v8h-20zM318 117h22v5h-22zM329 117v13m0-13c-12-1-6-11 0 0 5-11 12-1 0 0Z" fill="none" stroke="#fffdf5" strokeWidth="1.2" strokeLinejoin="round" />
-        <g fill="none" stroke="#3054a7" strokeWidth="1.2" opacity=".75">
-          <circle cx="294" cy="130" r="25" />
-          <circle cx="294" cy="130" r="21" />
-          <path d="M242 122q-11-8-22 0t-22 0m44 8q-11-8-22 0t-22 0m44 8q-11-8-22 0t-22 0" />
-        </g>
-        <path d="m294 119 2.2 7.1 7.4.1-5.9 4.4 2.2 7.1-5.9-4.3-6 4.3 2.3-7.1-6-4.4 7.4-.1z" fill="#3054a7" opacity=".75" />
-        <circle cx="224" cy="187" r="16" fill="#ad3a2b" />
-        <circle cx="224" cy="187" r="12" fill="none" stroke="#e99e82" />
-        <path d="M224 180v14m-6-10.5 12 7m0-7-12 7" fill="none" stroke="#fffdf5" strokeWidth="1.2" strokeLinecap="round" />
-      </g>
-    </svg>
-  );
-}
-
 export function Layout({ children }: { children: ReactNode }) {
   return (
     <>
@@ -92,14 +50,14 @@ export function Layout({ children }: { children: ReactNode }) {
       <header className="site-header">
         <div className="site-width">
           <Link className="wordmark" to="/">
-            <span className="brand-icon"><Icon name="gift" /></span>
+            <HolidayStar className="brand-star" />
             Secret Santa
           </Link>
         </div>
       </header>
       <main id="main" className="site-width">{children}</main>
       <footer className="site-width site-footer">
-        <span className="footer-mark" aria-hidden="true">✳</span> Secret Santa
+        <HolidayStar className="footer-star" /> Secret Santa
       </footer>
     </>
   );
@@ -175,6 +133,18 @@ function ManualJoin({ code }: { code?: string }) {
   );
 }
 
+function EntryHero({ title, children }: { title: ReactNode; children?: ReactNode }) {
+  return (
+    <div className="entry-hero">
+      <div className="entry-hero-copy">
+        <h1>{title}</h1>
+        {children && <p>{children}</p>}
+      </div>
+      <ChristmasTree />
+    </div>
+  );
+}
+
 export function Entry({ user, invite, step, error, values, defaultYear }: EntryProps) {
   const location = useLocation();
   const action = location.pathname + location.search;
@@ -184,15 +154,13 @@ export function Entry({ user, invite, step, error, values, defaultYear }: EntryP
 
   return (
     <div className="entry">
-      <div className="entry-art">
-        <h1>{invite ? <>You’re<br />invited.</> : <>Gifts for<br />your people.</>}</h1>
-        <p>{invite ? "There’s a Secret Santa exchange with your name on it." : "Draw names in secret and share a wish list with the person who drew yours."}</p>
-        <Envelope />
-      </div>
+      <EntryHero title={invite ? "You’re invited." : "Meet under the tree."}>
+        {invite ? "Join your group for a Christmas gift exchange." : "Make someone’s Christmas."}
+      </EntryHero>
       <section className="entry-paper" aria-labelledby="entry-heading">
         {invite && (
           <div className="invite-preview">
-            <span className="small-icon"><Icon name="mail" /></span>
+            <span className="small-icon"><Icon name="gift" /></span>
             <div>
               <p className="section-note">Your invitation to</p>
               <p className="invite-name">{invite.name}</p>
@@ -203,14 +171,14 @@ export function Entry({ user, invite, step, error, values, defaultYear }: EntryP
         <Feedback error={error} />
         {step === "email" && (
           <>
-            <h2 id="entry-heading">{invite ? "Sign in to join" : "Start with your email"}</h2>
-            <p>We’ll email you a one-time sign-in code.</p>
+            <h2 id="entry-heading">{invite ? "Sign in to join" : "Sign in to Secret Santa"}</h2>
             <ActionForm intent="send-code" action={action} className="form-stack">
               <label>Email address
                 <input type="email" name="email" autoComplete="email" defaultValue={values.email} maxLength={254} required />
               </label>
-              <Submit intent="send-code">Email me a code <Icon name="arrow" /></Submit>
+              <Submit intent="send-code">Send sign-in code</Submit>
             </ActionForm>
+            <p className="entry-hint">We’ll send a six-digit code to your email.</p>
             {!invite && <ManualJoin code={manualCode} />}
           </>
         )}
@@ -276,12 +244,9 @@ export function Entry({ user, invite, step, error, values, defaultYear }: EntryP
 export function ExpiredInvite() {
   return (
     <div className="entry">
-      <div className="entry-art">
-        <h1>Return<br />to sender.</h1>
-        <Envelope />
-      </div>
+      <EntryHero title="This invite has expired." />
       <section className="entry-paper">
-        <h2>This invitation has expired</h2>
+        <h2>Get a fresh invite</h2>
         <p>Ask your organizer for a new Secret Santa invitation.</p>
         <Link className="button" to="/">Go to Secret Santa <Icon name="arrow" /></Link>
       </section>
@@ -452,7 +417,7 @@ function Invitations({ group, inviteUrl, values, resetValues }: {
 
   return (
     <section className="dashboard-section invite-section" id="invitations" aria-labelledby="invitations-heading">
-      <span className="section-icon"><Icon name="mail" /></span>
+      <span className="section-icon"><Icon name="share" /></span>
       <h2 id="invitations-heading">Invite your people</h2>
       <p>Send the link or tell them the group code.</p>
       <p className="group-code">Group code <strong>{group.code}</strong></p>
@@ -489,13 +454,23 @@ function Recipient({ data }: { data: DashboardData }) {
       : "You’re waiting for a recipient. If the organizer draws again and you’re included, your match will appear here.";
 
   return (
-    <section className="dashboard-section recipient-section" id="recipient" aria-labelledby="recipient-heading">
-      <span className="section-icon"><Icon name="gift" /></span>
-      <div>
-        <h2 id="recipient-heading">Your recipient</h2>
-        {recipient ? (
-          <>
-            <p className="recipient-name">{recipient.name}</p>
+    <section className="recipient-section" id="recipient" aria-label="Your Secret Santa draw">
+      {recipient ? (
+        <details key={season?.drawId} className="recipient-reveal">
+          <summary className="reveal-summary">
+            <span className="reveal-label">Your Secret Santa draw</span>
+            <span className="reveal-title when-closed">A surprise<br />for you</span>
+            <span className="reveal-action">
+              <span className="when-closed">Unwrap match</span>
+              <span className="when-open">Hide match</span>
+            </span>
+            <WrappedGift />
+          </summary>
+          <div>
+            <div className="recipient-result">
+              <p className="reveal-label">You drew</p>
+              <h2 className="recipient-name">{recipient.name}</h2>
+            </div>
             <div className="recipient-details">
               <div>
                 <h3><Icon name="pin" /> Mailing address</h3>
@@ -506,9 +481,15 @@ function Recipient({ data }: { data: DashboardData }) {
                 <WishList items={data.recipientItems} mode="recipient" empty="Their wish list is empty for now." />
               </div>
             </div>
-          </>
-        ) : <p>{pendingText}</p>}
-      </div>
+          </div>
+        </details>
+      ) : (
+        <div className="reveal-waiting">
+          <h2>Your Secret Santa draw</h2>
+          <p>{pendingText}</p>
+          <WrappedGift />
+        </div>
+      )}
     </section>
   );
 }
@@ -571,7 +552,7 @@ function Organizer({ data, values, resetValues }: { data: DashboardData; values:
       <div className="section-heading">
         <span className="section-icon"><Icon name="users" /></span>
         <div>
-          <h2 id="organizer-heading">Organizer desk</h2>
+          <h2 id="organizer-heading">Organizer tools</h2>
           <p>Manage the adult roster, exclusions, and annual draw.</p>
         </div>
       </div>
@@ -740,12 +721,10 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
     <MembershipContext value={self.id}>
       <div className="dashboard">
         <div className="dashboard-top">
-          <div>
-            <p className="section-note dashboard-greeting">Hi, {self.name}</p>
-            <h1>{group.name}</h1>
-            {group.description && <p className="group-description multiline">{group.description}</p>}
-          </div>
+          <p className="section-note">Hi, {self.name}</p>
           <SignOut />
+          <h1>{group.name}</h1>
+          {group.description && <p className="group-description multiline">{group.description}</p>}
         </div>
         <div className="exchange-status">
           <span>{season ? `${season.year} exchange` : "Annual exchange"}</span>
@@ -753,15 +732,14 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
             {season?.completed ? "Completed" : season?.drawId ? "Names drawn" : season ? "Waiting for the draw" : "Waiting for the next exchange"}
           </span>
         </div>
+        {(error || message) && <div className="dashboard-feedback" tabIndex={-1} ref={feedback}><Feedback error={error} message={message} /></div>}
+        <Recipient data={data} />
         <nav className="dashboard-nav" aria-label="In this exchange">
-          <a href="#recipient">Recipient</a>
           <a href="#wish-list">My wish list</a>
           <a href="#little-ones">Little Ones</a>
           <a href="#invitations">Invitations</a>
           {organizer && <a href="#organizer">Organizer</a>}
         </nav>
-        {(error || message) && <div className="dashboard-feedback" tabIndex={-1} ref={feedback}><Feedback error={error} message={message} /></div>}
-        <Recipient data={data} />
         <div className="dashboard-columns">
           <section className="dashboard-section" id="wish-list" aria-labelledby="wish-list-heading">
             <span className="section-icon"><Icon name="gift" /></span>
