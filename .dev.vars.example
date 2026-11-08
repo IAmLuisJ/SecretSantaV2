@@ -1,0 +1,2 @@
+# Replace this example with the output of: openssl rand -hex 32
+BETTER_AUTH_SECRET=replace-with-a-random-64-character-value
