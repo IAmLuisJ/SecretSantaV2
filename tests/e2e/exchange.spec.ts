@@ -3,11 +3,21 @@ import { readFile } from "node:fs/promises";
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 
-const origin = "http://127.0.0.1:5197";
+const port = process.env.SANTA_LOCAL_PORT ?? "5197";
+const origin = `http://127.0.0.1:${port}`;
 const png = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2xkAAAAASUVORK5CYII=",
   "base64",
 );
+
+test.beforeEach(async ({ request }) => {
+  // Keep the loopback sign-in quota independent across test cases.
+  const database = "00000000-0000-4000-8000-000000000001";
+  const response = await request.post(`/cdn-cgi/local/explorer/api/d1/database/${database}/raw`, {
+    data: { sql: "DELETE FROM auth_rate_limits" },
+  });
+  await expect(response).toBeOK();
+});
 
 async function signIn(page: Page, url: string, email: string) {
   await page.goto(url);
@@ -16,7 +26,7 @@ async function signIn(page: Page, url: string, email: string) {
   await expect(page.getByRole("heading", { name: "Check your inbox" })).toBeVisible();
   let otp: string | undefined;
   await expect.poll(async () => {
-    const output = await readFile(".cloudflare/e2e-mail.log", "utf8");
+    const output = await readFile(`.cloudflare/e2e-mail-${port}.log`, "utf8");
     const marker = `to: '${email}'`;
     const message = output.includes(marker) ? output.split(marker).at(-1)?.split("[local mail]")[0] : undefined;
     otp = message?.match(/sign-in code is (\d{6})/)?.[1];
@@ -44,6 +54,91 @@ async function addressAndWish(page: Page, name: string) {
   await wishes.getByRole("button", { name: "Add wish" }).click();
   await expect(wishes.getByText(`${name} wish`, { exact: true })).toBeVisible();
 }
+
+test("a Draw Party counts down and unlocks the private match for live and late arrivals", async ({ page, browser }) => {
+  test.setTimeout(120_000);
+  const organizerName = "Draw Party Host";
+  await signIn(page, "/", `party-host-${randomUUID()}@example.test`);
+  await page.getByLabel("Group name").fill("Holiday Draw");
+  await page.getByLabel("Your display name").fill(organizerName);
+  await page.getByRole("button", { name: "Create group" }).click();
+  const invite = await page.getByLabel("Invitation link").inputValue();
+  await addressAndWish(page, "Host");
+  const privatePhoto = await page.locator("#wish-list img").getAttribute("src");
+  expect(privatePhoto).toBeTruthy();
+
+  const context = await browser.newContext({ baseURL: origin });
+  try {
+    const guest = await context.newPage();
+    const pageErrors: string[] = [];
+    guest.on("pageerror", error => pageErrors.push(error.message));
+    await signIn(guest, invite, `party-guest-${randomUUID()}@example.test`);
+    await guest.getByLabel("Your display name").fill("Party Guest");
+    await guest.getByRole("button", { name: "Join group" }).click();
+    await expect(guest).toHaveURL(/\/exchange\/[a-f0-9-]{36}$/);
+    await page.reload();
+
+    const releaseField = page.getByLabel("Draw Party release time");
+    await expect(releaseField).toBeVisible();
+    const releaseAt = Math.ceil((Date.now() + 20_000) / 60_000) * 60_000;
+    const localTime = await page.evaluate((timestamp) => {
+      const date = new Date(timestamp);
+      return new Date(timestamp - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+    }, releaseAt);
+    await releaseField.fill(localTime);
+    await page.getByRole("button", { name: "Draw names", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Draw Party" })).toBeVisible();
+
+    await guest.bringToFront();
+    const match = guest.locator("#recipient");
+    const timer = match.getByRole("timer");
+    await expect(match.getByRole("heading", { name: "Draw Party" })).toBeVisible({ timeout: 12_000 });
+    await expect(match.locator("time")).toHaveAttribute("datetime", new Date(releaseAt).toISOString());
+    await expect(timer).toBeVisible();
+    const firstTick = await timer.textContent();
+    await expect(match.getByText("Unwrap match", { exact: true })).toHaveCount(0);
+    const html = await (await guest.request.get(guest.url())).text();
+    for (const detail of [organizerName, "100 Host Lane", "Host wish", privatePhoto!]) expect(html).not.toContain(detail);
+    expect((await guest.request.get(privatePhoto!)).status()).toBe(404);
+    await expect.poll(() => timer.textContent(), { timeout: 5000 }).not.toBe(firstTick);
+    expect(pageErrors).toEqual([]);
+
+    const littleOnes = guest.locator("#little-ones");
+    await littleOnes.getByText("Add a child", { exact: true }).click();
+    await littleOnes.getByLabel("Display name", { exact: true }).fill(" ");
+    await littleOnes.getByLabel("Age", { exact: true }).fill("6");
+    let finishPost!: () => void;
+    const holdPost = new Promise<void>(resolve => { finishPost = resolve; });
+    await guest.route(url => url.pathname.endsWith(".data"), async route => {
+      if (route.request().method() === "POST") await holdPost;
+      await route.continue();
+    });
+    try {
+      // Let the countdown expire while a form submission is waiting to fail.
+      await littleOnes.getByRole("button", { name: "Add child", exact: true }).click();
+      await expect(littleOnes.getByRole("button", { name: "Add child", exact: true })).toBeDisabled();
+      await expect(timer).toHaveText("0h 0m 0s", { timeout: 85_000 });
+    } finally {
+      finishPost();
+    }
+    await expect(guest.getByRole("alert")).toHaveText("Fill in the required fields.");
+    await expect(match.getByText("Unwrap match", { exact: true })).toBeVisible();
+    await expect(match.locator(".recipient-name")).toBeHidden();
+    await match.getByText("Unwrap match", { exact: true }).click();
+    await expect(match.locator(".recipient-name")).toHaveText(organizerName);
+    await expect(match.locator("address")).toContainText("100 Host Lane");
+    await expect(match.getByText("Host wish", { exact: true })).toBeVisible();
+    expect((await guest.request.get(privatePhoto!)).status()).toBe(200);
+
+    const late = await context.newPage();
+    await late.goto(guest.url());
+    await expect(late.getByRole("timer")).toHaveCount(0);
+    await late.getByText("Unwrap match", { exact: true }).click();
+    await expect(late.locator(".recipient-name")).toHaveText(organizerName);
+  } finally {
+    await context.close();
+  }
+});
 
 test("native forms verify email and create a group before JavaScript loads", async ({ browser }) => {
   const context = await browser.newContext({ baseURL: origin, javaScriptEnabled: false });

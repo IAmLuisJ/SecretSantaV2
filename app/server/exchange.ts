@@ -150,6 +150,7 @@ export async function getExchange(db: D1Database, userId: string, groupId: strin
     SELECT g.id AS groupId, g.name, g.description, g.code,
       self.id AS selfId, self.name AS selfName, self.role,
       s.id AS seasonId, s.year, s.completed, s.revision, d.id AS drawId, d.revision AS drawRevision,
+      d.release_at AS drawReleaseAt, unixepoch() AS readAt,
       s.codename_mode AS codenameMode, own_alias.codename AS selfCodename, a.recipient_id AS recipientId,
       CASE WHEN s.codename_mode = 1 THEN a.codename ELSE recipient.name END AS recipientName,
       CASE WHEN self.role = 'organizer' THEN (
@@ -178,14 +179,16 @@ export async function getExchange(db: D1Database, userId: string, groupId: strin
     JOIN groups g ON g.id = self.group_id
     LEFT JOIN seasons s ON s.id = (SELECT id FROM seasons WHERE group_id = g.id ORDER BY year DESC LIMIT 1)
     LEFT JOIN draws d ON d.id = s.active_draw_id
-    LEFT JOIN assignments a ON a.draw_id = d.id AND a.giver_id = self.id
-    LEFT JOIN assignments own_alias ON own_alias.draw_id = d.id AND own_alias.recipient_id = self.id AND s.codename_mode = 1
+    LEFT JOIN released_draws released ON released.id = d.id
+    LEFT JOIN assignments a ON a.draw_id = released.id AND a.giver_id = self.id
+    LEFT JOIN assignments own_alias ON own_alias.draw_id = released.id AND own_alias.recipient_id = self.id AND s.codename_mode = 1
     LEFT JOIN memberships recipient ON recipient.id = a.recipient_id
     WHERE self.user_id = ? AND self.group_id = ?
   `).bind(userId, groupId).first<{
     groupId: string; name: string; description: string; code: string;
     selfId: string; selfName: string; selfCodename: string | null; role: Role;
     seasonId: string | null; year: number; completed: number; revision: number; drawId: string | null; drawRevision: number | null;
+    drawReleaseAt: number | null; readAt: number;
     codenameMode: number | null; recipientId: string | null; recipientName: string | null;
     members: string; exclusions: string; waitingCount: number; mailFailures: number;
   }>();
@@ -195,8 +198,10 @@ export async function getExchange(db: D1Database, userId: string, groupId: strin
     self: { id: row.selfId, name: row.selfName, codename: row.selfCodename, role: row.role },
     season: row.seasonId ? {
       id: row.seasonId, year: row.year, completed: Boolean(row.completed),
-      revision: row.revision, drawId: row.drawId, drawRevision: row.drawRevision, codenameMode: Boolean(row.codenameMode),
+      revision: row.revision, drawId: row.drawId, drawRevision: row.drawRevision,
+      drawReleaseAt: row.drawReleaseAt, codenameMode: Boolean(row.codenameMode),
     } : null,
+    readAt: row.readAt,
     members: (JSON.parse(row.members) as MemberRow[])
       .map((member) => ({ ...member, eligible: Boolean(member.eligible) }))
       .sort((first, second) => first.name.localeCompare(second.name)),
@@ -305,6 +310,24 @@ async function changeExclusion(db: D1Database, groupId: string, form: FormData, 
   return "Exclusion removed.";
 }
 
+function drawReleaseTime(form: FormData, now: number) {
+  const time = form.get("releaseTime");
+  if (time === null || time === "") return null;
+  const offset = form.get("releaseOffset") ?? "0";
+  const invalidTime = "Enter a valid date and time for the draw release.";
+  if (typeof time !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(time)
+    || typeof offset !== "string" || !/^-?\d{1,3}$/.test(offset) || Math.abs(Number(offset)) > 14 * 60) {
+    throw new ExchangeError(invalidTime);
+  }
+  const wallTime = Date.parse(`${time}:00Z`);
+  if (!Number.isFinite(wallTime) || new Date(wallTime).toISOString().slice(0, 16) !== time) {
+    throw new ExchangeError(invalidTime);
+  }
+  const releaseAt = wallTime / 1000 + Number(offset) * 60;
+  if (releaseAt <= now) throw new ExchangeError("Choose a draw release time in the future.");
+  return releaseAt;
+}
+
 async function publishDraw(db: D1Database, group: Membership, form: FormData, origin: string, mailEnabled: boolean) {
   const reference = seasonReference(form);
   const requestKey = field(form, "requestId");
@@ -314,8 +337,10 @@ async function publishDraw(db: D1Database, group: Membership, form: FormData, or
     .bind(groupId, reference.id, requestKey);
 
   const [seasons, participants, exclusions, history, existing] = await db.batch([
-    db.prepare("SELECT id, year, completed, revision, active_draw_id AS drawId, codename_mode AS codenameMode FROM seasons WHERE group_id = ? AND id = ?")
-      .bind(groupId, reference.id),
+    db.prepare(`
+      SELECT id, year, completed, revision, active_draw_id AS drawId, codename_mode AS codenameMode, unixepoch() AS now
+      FROM seasons WHERE group_id = ? AND id = ?
+    `).bind(groupId, reference.id),
     db.prepare("SELECT membership_id AS id FROM season_participants WHERE group_id = ? AND season_id = ? AND eligible = 1")
       .bind(groupId, reference.id),
     db.prepare("SELECT first_id AS firstId, second_id AS secondId FROM pair_exclusions WHERE group_id = ?").bind(groupId),
@@ -329,11 +354,12 @@ async function publishDraw(db: D1Database, group: Membership, form: FormData, or
   ]);
   if (existing.results.length) return "This draw was already published.";
 
-  const current = seasons.results[0] as (SeasonHead & { codenameMode: number }) | undefined;
+  const current = seasons.results[0] as (SeasonHead & { codenameMode: number; now: number }) | undefined;
   if (!current || current.completed || current.revision !== reference.revision || current.drawId !== reference.drawId) {
     throw new ExchangeError(seasonChanged);
   }
   if (current.drawId) requireConfirmation(form, "Confirm the redraw. Everyone may get a different recipient.");
+  const releaseAt = drawReleaseTime(form, current.now);
 
   const roster = (participants.results as { id: string }[]).map(({ id }) => id);
   const assignments = findDraw(roster, exclusions.results as Exclusion[], history.results as Assignment[]);
@@ -344,11 +370,11 @@ async function publishDraw(db: D1Database, group: Membership, form: FormData, or
   const id = crypto.randomUUID();
   const [published, , , , notifications] = await db.batch([
     db.prepare(`
-      INSERT INTO draws(id, group_id, season_id, revision, request_key)
-      SELECT ?, group_id, id, revision, ? FROM seasons
+      INSERT INTO draws(id, group_id, season_id, revision, request_key, release_at)
+      SELECT ?, group_id, id, revision, ?, ? FROM seasons
       WHERE id = ? AND group_id = ? AND completed = 0 AND revision = ? AND active_draw_id IS ?
       ON CONFLICT(season_id, request_key) DO NOTHING
-    `).bind(id, requestKey, reference.id, groupId, reference.revision, reference.drawId),
+    `).bind(id, requestKey, releaseAt, reference.id, groupId, reference.revision, reference.drawId),
     db.prepare(`
       INSERT INTO assignments(draw_id, season_id, giver_id, recipient_id, codename)
       SELECT d.id, d.season_id, json_extract(edge.value, '$.giverId'),
@@ -363,14 +389,15 @@ async function publishDraw(db: D1Database, group: Membership, form: FormData, or
       WHERE group_id = ? AND kind = 'draw' AND status = 'pending' AND EXISTS (SELECT 1 FROM draws WHERE id = ?)
     `).bind(groupId, id),
     db.prepare(`
-      INSERT INTO email_outbox(event_key, kind, group_id, draw_id, recipient, subject, body)
-      SELECT 'draw:' || d.id || ':' || m.id, 'draw', d.group_id, d.id, m.email, ?, ?
+      INSERT INTO email_outbox(event_key, kind, group_id, draw_id, recipient, subject, body, next_attempt_at)
+      SELECT 'draw:' || d.id || ':' || m.id, 'draw', d.group_id, d.id, m.email, ?, ?, coalesce(d.release_at, unixepoch())
       FROM draws d JOIN assignments a ON a.draw_id = d.id
       JOIN memberships m ON m.id = a.giver_id
       JOIN "user" u ON u.id = m.user_id AND u.emailVerified = 1 WHERE d.id = ? AND ?
     `).bind("Your Secret Santa draw is ready", `Sign in to see your recipient for ${group.name}.\n\n${new URL(exchangePath(group.groupId), origin)}`, id, Number(mailEnabled)),
   ]);
   if (published.meta.changes) {
+    if (releaseAt !== null) return "Draw Party scheduled.";
     if (!notifications.meta.changes) return "Draw published. Everyone can sign in to see their match.";
     if (notifications.meta.changes < assignments.length) return "Draw published. Remind anyone who uses a password to sign in for their match.";
     return "Draw published. Notifications are queued.";
@@ -400,12 +427,21 @@ async function finishSeason(db: D1Database, groupId: string, form: FormData, com
     ? await db.prepare(`
       UPDATE seasons SET completed = 1
       WHERE id = ? AND group_id = ? AND completed = 0 AND revision = ? AND active_draw_id = ?
+        AND EXISTS (SELECT 1 FROM released_draws WHERE id = seasons.active_draw_id)
     `).bind(id, groupId, revision, drawId).run()
     : await db.prepare(`
       DELETE FROM seasons
       WHERE id = ? AND group_id = ? AND completed = 0 AND revision = ? AND active_draw_id IS NULL
     `).bind(id, groupId, revision).run();
-  if (!result.meta.changes) throw new ExchangeError(seasonChanged);
+  if (!result.meta.changes) {
+    if (complete && await db.prepare(`
+      SELECT 1 FROM seasons s JOIN draws d ON d.id = s.active_draw_id
+      WHERE s.id = ? AND s.group_id = ? AND d.id = ? AND d.release_at > unixepoch()
+    `).bind(id, groupId, drawId).first()) {
+      throw new ExchangeError("You can complete this exchange after the draw is released.");
+    }
+    throw new ExchangeError(seasonChanged);
+  }
   return complete ? "Exchange completed." : "Undrawn exchange discarded.";
 }
 

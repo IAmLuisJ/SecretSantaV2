@@ -4,11 +4,13 @@ import { createWriteStream, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const port = process.env.SANTA_LOCAL_PORT ?? "5197";
 const directory = mkdtempSync(join(tmpdir(), "secret-santa-e2e-"));
 const env = {
   ...process.env,
   SANTA_LOCAL_STATE: directory,
-  SANTA_LOCAL_PORT: "5197",
+  SANTA_LOCAL_PORT: port,
+  X_LOCAL_EXPLORER: "true",
   BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
   FORCE_COLOR: "0",
 };
@@ -23,7 +25,7 @@ if (migration.status !== 0) {
 }
 
 mkdirSync(".cloudflare", { recursive: true });
-const output = createWriteStream(".cloudflare/e2e-mail.log", { mode: 0o600 });
+const output = createWriteStream(`.cloudflare/e2e-mail-${port}.log`, { mode: 0o600 });
 const server = spawn(process.execPath, ["node_modules/vite/bin/vite.js", "dev"], { env, stdio: ["ignore", "pipe", "pipe"] });
 server.stdout.pipe(output, { end: false });
 server.stdout.pipe(process.stdout);

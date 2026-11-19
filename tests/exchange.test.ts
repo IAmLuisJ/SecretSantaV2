@@ -8,7 +8,12 @@ import { createGroup, getExchange as getGroupExchange, getInvite, joinGroup, lis
 const origin = "https://santa.example.test";
 const users = ["alex", "blake", "casey", "devon", "erin", "outsider"];
 const user = (id: string) => ({ id, email: `${id}@example.test` });
-const migrations = ["0001_auth_mail.sql", "0002_exchange.sql", "0003_gifts.sql", "0004_codenames.sql", "0005_multiple_exchanges.sql"];
+const multipleExchangesMigration = "0005_multiple_exchanges.sql";
+const drawPartyMigration = "0006_draw_party.sql";
+const migrations = [
+  "0001_auth_mail.sql", "0002_exchange.sql", "0003_gifts.sql", "0004_codenames.sql",
+  multipleExchangesMigration, drawPartyMigration,
+];
 
 async function getExchange(db: D1Database, userId: string) {
   const [group] = await listExchanges(db, userId);
@@ -154,8 +159,8 @@ test("verified group enrollment is atomic and shows only permitted group informa
   assert.equal(fixture.count("groups"), 1);
 });
 
-test("the multiple-exchanges migration preserves existing draws, wishes, and membership data", () => {
-  const fixture = new TestD1(migrations.slice(0, -1));
+test("the multiple-exchanges migration preserves existing draws, wishes, and membership data", async () => {
+  const fixture = new TestD1(migrations.slice(0, migrations.indexOf(multipleExchangesMigration)));
   const { sqlite } = fixture;
   sqlite.exec(`
     INSERT INTO groups VALUES ('group', 'Family', '', 'AAAAAAAAAAAAAAAA');
@@ -181,7 +186,7 @@ test("the multiple-exchanges migration preserves existing draws, wishes, and mem
     "pair_exclusions", "invite_requests", "addresses", "children", "gift_items", "photo_cleanup"];
   const snapshot = () => tables.map(table => sqlite.prepare(`SELECT * FROM ${table}`).all().map(row => JSON.stringify(row)).sort());
   const before = snapshot();
-  fixture.migrate(migrations.at(-1)!);
+  fixture.migrate(multipleExchangesMigration);
   assert.deepEqual(snapshot(), before);
   assert.deepEqual(sqlite.prepare("PRAGMA foreign_key_check").all(), []);
   assert.throws(() => sqlite.exec(`
@@ -189,6 +194,11 @@ test("the multiple-exchanges migration preserves existing draws, wishes, and mem
   `), /UNIQUE/);
   sqlite.exec("DELETE FROM gift_items WHERE id = 'adult-wish'");
   assert.equal(fixture.count("photo_cleanup", "photo_key = 'photos/scarf'"), 1);
+
+  fixture.migrate(drawPartyMigration);
+  const exchange = await getGroupExchange(fixture.db, "alex", "group");
+  assert.equal(exchange?.season?.drawReleaseAt, null);
+  assert.equal(exchange?.recipient?.name, "Detective Eggnog");
 });
 
 test("the organizer can enable codenames before the draw and published aliases stay private and stable", async () => {
@@ -216,6 +226,75 @@ test("the organizer can enable codenames before the draw and published aliases s
   await assert.rejects(mutateExchange(db, "alex", settings(0, published.revision), origin), /first draw/i);
   assert.deepEqual(await Promise.all(participants.map(async (id) => (await getExchange(db, id))?.recipient?.name)), codenames);
 });
+
+test("a draw party holds matches, codenames, and notifications until its release second", async () => {
+  const { db, sqlite } = await setup(2);
+  const releaseAt = Date.parse("2026-12-20T23:00:00Z") / 1000;
+  let now = releaseAt - 1;
+  sqlite.function("unixepoch", () => now);
+
+  const current = await season(db);
+  await mutateExchange(db, "alex", form("set-codename-mode", {
+    seasonId: current.id, revision: current.revision, enabled: 1,
+  }), origin);
+  const draw = await submission(db);
+  draw.set("releaseTime", "2026-12-20T18:00");
+  draw.set("releaseOffset", "300");
+  await assert.rejects(mutateExchange(db, "blake", draw, origin), /organizer/i);
+  await mutateExchange(db, "alex", draw, origin);
+
+  const member = await getExchange(db, "blake");
+  assert.ok(member?.season?.drawId);
+  assert.equal(member.season.drawReleaseAt, releaseAt);
+  assert.equal(member.recipient, null);
+  assert.equal(member.self.codename, null);
+  assert.equal((await getExchange(db, "alex"))?.recipient, null);
+  await assert.rejects(complete(db), /release/i);
+
+  const dueDrawMail = () => sqlite.prepare(`
+    SELECT recipient FROM email_outbox
+    WHERE kind = 'draw' AND status = 'pending' AND next_attempt_at <= unixepoch() ORDER BY recipient
+  `).all().map(({ recipient }) => recipient);
+  assert.deepEqual(dueDrawMail(), []);
+
+  now = releaseAt;
+  const released = await getExchange(db, "blake");
+  const organizer = await getExchange(db, "alex");
+  assert.ok(released?.recipient);
+  assert.equal(released.recipient.name, organizer?.self.codename);
+  assert.equal(organizer?.recipient?.name, released.self.codename);
+  assert.deepEqual(dueDrawMail(), [user("alex").email, user("blake").email]);
+  await mutateExchange(db, "alex", draw, origin);
+  await complete(db);
+  assert.equal((await getExchange(db, "blake"))?.recipient?.name, released.recipient.name);
+});
+
+test("invalid release dates leave the draw untouched and an immediate redraw replaces a scheduled draw", async () => {
+  const fixture = await setup(2);
+  const { db, sqlite } = fixture;
+  sqlite.function("unixepoch", () => Date.parse("2026-12-20T23:00:00Z") / 1000);
+
+  const first = await submission(db);
+  for (const releaseTime of ["tomorrow", "2027-02-30T20:00", "2026-12-20T23:00"]) {
+    first.set("releaseTime", releaseTime);
+    await assert.rejects(mutateExchange(db, "alex", first, origin), /release/i);
+  }
+  assert.equal(fixture.count("draws"), 0);
+  assert.equal(fixture.count("email_outbox", "kind = 'draw'"), 0);
+
+  first.set("releaseTime", "2026-12-21T23:00");
+  await mutateExchange(db, "alex", first, origin);
+  assert.equal((await getExchange(db, "blake"))?.recipient, null);
+
+  await mutateExchange(db, "alex", await submission(db, crypto.randomUUID(), "yes"), origin);
+  assert.equal((await getExchange(db, "blake"))?.recipient?.name, "Alex");
+  assert.equal(fixture.count("email_outbox", "kind = 'draw' AND status = 'cancelled'"), 2);
+  assert.equal(fixture.count("email_outbox", "kind = 'draw' AND status = 'pending' AND next_attempt_at <= unixepoch()"), 2);
+});
+
+function drawReference(current: Awaited<ReturnType<typeof season>>) {
+  return { seasonId: current.id, revision: current.revision, drawId: current.drawId ?? "" };
+}
 
 test("four adults keep a private draw across a skipped year with bidirectional exclusions and directed repeat prevention", async () => {
   const fixture = await setup(4);

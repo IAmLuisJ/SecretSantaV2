@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const origin = "http://127.0.0.1:5197";
+const origin = `http://127.0.0.1:${process.env.SANTA_LOCAL_PORT ?? "5197"}`;
 
 export default defineConfig({
   testDir: "./tests/e2e",

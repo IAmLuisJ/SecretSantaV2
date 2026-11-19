@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Form, Link, useLocation, useNavigation } from "react-router";
+import { Form, Link, useLocation, useNavigation, type FormProps } from "react-router";
+import { DrawPartyCountdown, useDrawStatusRefresh } from "./draw-party";
 import { ChristmasTree, HolidayStar, WrappedGift } from "./holiday-art";
 import { maxPasswordLength, minPasswordLength } from "./password";
 import { exchangePath, type Address, type DashboardData, type EntryStep, type ExchangeSummary, type GiftItem, type Invite, type User, type Values } from "./types";
@@ -75,13 +76,14 @@ function Feedback({ error, message }: { error?: string; message?: string }) {
   );
 }
 
-function ActionForm({ intent, action, children, className, upload = false, resetOn }: {
+function ActionForm({ intent, action, children, className, upload = false, resetOn, onSubmit }: {
   intent: string;
   action?: string;
   children: ReactNode;
   className?: string;
   upload?: boolean;
   resetOn?: Values;
+  onSubmit?: FormProps["onSubmit"];
 }) {
   const form = useRef<HTMLFormElement>(null);
   const actingMembershipId = useContext(MembershipContext);
@@ -91,7 +93,7 @@ function ActionForm({ intent, action, children, className, upload = false, reset
     if (resetOn) form.current?.reset();
   }, [resetOn]);
   return (
-    <Form ref={form} method="post" action={action} className={className} encType={upload ? "multipart/form-data" : undefined} aria-busy={pending || undefined}>
+    <Form ref={form} method="post" action={action} className={className} onSubmit={onSubmit} encType={upload ? "multipart/form-data" : undefined} aria-busy={pending || undefined}>
       <input type="hidden" name="intent" value={intent} />
       {actingMembershipId && <input type="hidden" name="actingMembershipId" value={actingMembershipId} />}
       {children}
@@ -510,7 +512,7 @@ function Invitations({ group, inviteUrl, mailEnabled, values, resetValues }: {
   );
 }
 
-function Recipient({ data }: { data: DashboardData }) {
+function Recipient({ data, pendingReleaseAt }: { data: DashboardData; pendingReleaseAt: number | null }) {
   const { season, recipient } = data.exchange;
   const pendingText = !season?.drawId
     ? "Your recipient will appear here after the organizer draws names."
@@ -520,7 +522,9 @@ function Recipient({ data }: { data: DashboardData }) {
 
   return (
     <section className="recipient-section" id="recipient" aria-label="Your Secret Santa draw">
-      {recipient ? (
+      {pendingReleaseAt !== null ? (
+        <DrawPartyCountdown key={data.requestId} releaseAt={pendingReleaseAt} readAt={data.exchange.readAt} />
+      ) : recipient ? (
         <details key={season?.drawId} className="recipient-reveal">
           <summary className="reveal-summary">
             <span className="reveal-label">Your Secret Santa draw</span>
@@ -611,7 +615,58 @@ function SeasonFields({ season, includeDraw = false }: { season: Season; include
   );
 }
 
-function Organizer({ data, values, resetValues }: { data: DashboardData; values: Values; resetValues?: Values }) {
+function DrawForm({ season, requestId, releaseTime }: { season: Season; requestId: string; releaseTime?: string }) {
+  const [useDeviceTime, setUseDeviceTime] = useState(false);
+  const timeInput = useRef<HTMLInputElement>(null);
+  const offsetInput = useRef<HTMLInputElement>(null);
+  useEffect(() => setUseDeviceTime(true), []);
+
+  const setReleaseOffset: FormProps["onSubmit"] = (event) => {
+    const input = timeInput.current;
+    const offset = offsetInput.current;
+    if (!useDeviceTime || !input?.value || !offset) return;
+    const date = new Date(input.value);
+    const minutes = date.getTimezoneOffset();
+    if (!Number.isFinite(minutes) || new Date(date.getTime() - minutes * 60_000).toISOString().slice(0, 16) !== input.value) {
+      event.preventDefault();
+      input.setCustomValidity("Choose a time that exists in your time zone.");
+      input.reportValidity();
+      return;
+    }
+    offset.value = String(minutes);
+  };
+
+  return (
+    <ActionForm intent="draw" className="form-stack" onSubmit={setReleaseOffset}>
+      <SeasonFields season={season} includeDraw />
+      <input type="hidden" name="requestId" value={requestId} />
+      <input ref={offsetInput} type="hidden" name="releaseOffset" defaultValue="0" />
+      <div>
+        <label>Draw Party release time
+          <input ref={timeInput} type="datetime-local" name="releaseTime" defaultValue={releaseTime}
+            aria-describedby="draw-release-note" onChange={(event) => event.currentTarget.setCustomValidity("")} />
+        </label>
+        <p id="draw-release-note" className="field-note">
+          Leave blank to publish immediately. {useDeviceTime ? "Uses your device’s time zone." : "Time is in UTC."}
+        </p>
+      </div>
+      {season.drawId && (
+        <label className="check-line">
+          <input name="confirm" type="checkbox" value="yes" required />
+          <span>I understand everyone’s recipient can change.</span>
+        </label>
+      )}
+      <Submit intent="draw">{season.drawId ? "Redraw names" : "Draw names"}</Submit>
+    </ActionForm>
+  );
+}
+
+function Organizer({ data, values, resetValues, drawLocked }: {
+  data: DashboardData;
+  values: Values;
+  resetValues?: Values;
+  drawLocked: boolean;
+}) {
   const { season, members, exclusions, waitingCount, mailFailures } = data.exchange;
   const isOpen = Boolean(season && !season.completed);
   const changesPending = Boolean(season?.drawId && season.revision !== season.drawRevision);
@@ -632,7 +687,9 @@ function Organizer({ data, values, resetValues }: { data: DashboardData; values:
         <p className="feedback feedback-warning">{mailFailures === 1 ? "1 group email couldn’t be delivered." : `${mailFailures} group emails couldn’t be delivered.`}</p>
       )}
       {isOpen && changesPending && (
-        <p className="feedback feedback-warning">Roster or exclusion changes are waiting for a redraw. Published recipients are still available.</p>
+        <p className="feedback feedback-warning">
+          Roster or exclusion changes are waiting for a redraw.{!drawLocked && " Published recipients are still available."}
+        </p>
       )}
       <div className="organizer-grid">
         <div className="organizer-box">
@@ -718,18 +775,11 @@ function Organizer({ data, values, resetValues }: { data: DashboardData; values:
                   </Submit>
                 </ActionForm>
               )}
-              <ActionForm intent="draw" className="form-stack" key={`${season.id}-${season.revision}-${season.drawId}`}>
-                <SeasonFields season={season} includeDraw />
-                <input type="hidden" name="requestId" value={data.requestId} />
-                {season.drawId && (
-                  <label className="check-line">
-                    <input name="confirm" type="checkbox" value="yes" required />
-                    <span>I understand everyone’s recipient can change.</span>
-                  </label>
-                )}
-                <Submit intent="draw">{season.drawId ? "Redraw names" : "Draw names"}</Submit>
-              </ActionForm>
-              {season.drawId ? (
+              <DrawForm key={`${season.id}-${season.revision}-${season.drawId}`} season={season} requestId={data.requestId}
+                releaseTime={fieldsFor(values, "draw")?.releaseTime} />
+              {drawLocked ? (
+                <p className="draw-release-note section-note">You can complete this exchange after matches open.</p>
+              ) : season.drawId ? (
                 <details className="action-detail" open={Boolean(fieldsFor(values, "complete-season")) || undefined}>
                   <summary>Complete this exchange</summary>
                   <p>
@@ -790,7 +840,10 @@ function Organizer({ data, values, resetValues }: { data: DashboardData; values:
 }
 
 export function Dashboard({ data, message, error, values: submitted }: DashboardProps) {
-  const { group, self, season } = data.exchange;
+  const { group, self, season, readAt } = data.exchange;
+  const releaseAt = season?.drawReleaseAt;
+  const pendingReleaseAt = releaseAt != null && releaseAt > readAt ? releaseAt : null;
+  useDrawStatusRefresh(Boolean(season && !season.drawId), pendingReleaseAt !== null);
   const organizer = self.role === "organizer";
   const values = error ? submitted : {};
   const resetValues = message ? submitted : undefined;
@@ -812,12 +865,12 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
         <div className="exchange-status">
           <span>{season ? `${season.year} exchange` : "Annual exchange"}</span>
           <span className={`tag ${season?.drawId ? "tag-active" : ""}`}>
-            {season?.completed ? "Completed" : season?.drawId ? "Names drawn" : season ? "Waiting for the draw" : "Waiting for the next exchange"}
+            {season?.completed ? "Completed" : pendingReleaseAt !== null ? "Draw scheduled" : season?.drawId ? "Names drawn" : season ? "Waiting for the draw" : "Waiting for the next exchange"}
           </span>
         </div>
         {self.codename && <p className="section-note">Your codename is <strong>{self.codename}</strong>. Look for it on your gift.</p>}
         {(error || message) && <div className="dashboard-feedback" tabIndex={-1} ref={feedback}><Feedback error={error} message={message} /></div>}
-        <Recipient data={data} />
+        <Recipient data={data} pendingReleaseAt={pendingReleaseAt} />
         <nav className="dashboard-nav" aria-label="In this exchange">
           <a href="#wish-list">My wish list</a>
           <a href="#little-ones">Little Ones</a>
@@ -836,7 +889,7 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
           <LittleOnes children={data.children} values={values} resetValues={resetValues} />
         </div>
         <Invitations group={group} inviteUrl={data.inviteUrl} mailEnabled={data.mailEnabled} values={values} resetValues={resetValues} />
-        {organizer && <Organizer data={data} values={values} resetValues={resetValues} />}
+        {organizer && <Organizer data={data} values={values} resetValues={resetValues} drawLocked={pendingReleaseAt !== null} />}
       </div>
     </MembershipContext>
   );
