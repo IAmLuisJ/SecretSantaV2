@@ -1,8 +1,9 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { createWriteStream, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createWriteStream, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Miniflare } from "miniflare";
 
 const port = process.env.SANTA_LOCAL_PORT ?? "5197";
 const directory = mkdtempSync(join(tmpdir(), "secret-santa-e2e-"));
@@ -14,14 +15,39 @@ const env = {
   BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
   FORCE_COLOR: "0",
 };
-const migration = spawnSync(process.execPath, [
-  "node_modules/cf/bin/cf", "d1", "migrations", "apply",
-  "00000000-0000-4000-8000-000000000001",
-  "--local", "--persist-to", directory,
-], { env, stdio: "inherit" });
-if (migration.status !== 0) {
+
+async function applyMigrations() {
+  const runtime = new Miniflare({
+    // The Vite plugin uses this directory for the persisted local bindings.
+    resourcePersistencePath: join(directory, "v3"),
+    workers: [{ config: {
+      name: "e2e-migrations",
+      compatibilityDate: "2026-11-01",
+      env: { DB: { type: "d1", id: "00000000-0000-4000-8000-000000000001" } },
+      manifest: {
+        mainModule: "index.js",
+        modules: { "index.js": { type: "esm", contents: "export default {}" } },
+      },
+    } }],
+  });
+  try {
+    const db = await runtime.getD1Database("DB");
+    const files = readdirSync("migrations").filter(file => file.endsWith(".sql")).sort();
+    for (const file of files) {
+      const sql = readFileSync(join("migrations", file), "utf8");
+      const statements = sql.split(/;\n(?!END;)/).filter(statement => statement.trim());
+      await db.batch(statements.map(statement => db.prepare(statement)));
+    }
+  } finally {
+    await runtime.dispose();
+  }
+}
+
+try {
+  await applyMigrations();
+} catch (error) {
   rmSync(directory, { recursive: true, force: true });
-  process.exit(1);
+  throw error;
 }
 
 mkdirSync(".cloudflare", { recursive: true });
