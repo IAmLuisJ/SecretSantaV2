@@ -59,6 +59,115 @@ test("native forms verify email and create a group before JavaScript loads", asy
   }
 });
 
+test("one account can organize one group and join another", async ({ page, browser }) => {
+  const email = `multi-${randomUUID()}@example.test`;
+  await signIn(page, "/", email);
+  await page.getByLabel("Group name").fill("Family exchange");
+  await page.getByLabel("Your display name").fill("Family organizer");
+  await page.getByRole("button", { name: "Create group" }).click();
+  await expect(page.getByRole("heading", { name: "Organizer tools" })).toBeVisible();
+  const family = page.url();
+  const familyMember = await page.locator('input[name="actingMembershipId"]').first().inputValue();
+  await addressAndWish(page, "Family");
+
+  const context = await browser.newContext({ baseURL: origin });
+  try {
+    const friend = await context.newPage();
+    await signIn(friend, "/", `friend-${randomUUID()}@example.test`);
+    await friend.getByLabel("Group name").fill("Friends exchange");
+    await friend.getByLabel("Your display name").fill("Friends organizer");
+    await friend.getByRole("button", { name: "Create group" }).click();
+    const invite = await friend.getByLabel("Invitation link").inputValue();
+    const privatePhoto = await page.locator("#wish-list img").getAttribute("src");
+    expect((await friend.request.get(family)).status()).toBe(404);
+    expect((await friend.request.get(privatePhoto!)).status()).toBe(404);
+
+    await page.goto(invite);
+    await page.getByLabel("Your display name").fill("Friend");
+    await page.getByRole("button", { name: "Join group" }).click();
+    await expect(page.getByRole("heading", { name: "Friends exchange" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Organizer tools" })).toHaveCount(0);
+    await expect(page.locator("#wish-list").getByText("Family wish")).toHaveCount(0);
+    const friends = page.url();
+    expect(friends).not.toBe(family);
+    const friendMember = await page.locator('input[name="actingMembershipId"]').first().inputValue();
+    const denied = await page.request.post(friends, {
+      headers: { Origin: origin },
+      form: { intent: "delete-group", actingMembershipId: friendMember, groupId: new URL(friends).pathname.split("/").at(-1)!, confirm: "yes" },
+    });
+    expect(denied.status()).toBe(400);
+    const stale = await page.request.post(friends, {
+      headers: { Origin: origin },
+      form: { intent: "add-child", actingMembershipId: familyMember, name: "Wrong group", age: "8" },
+    });
+    expect(stale.status()).toBe(409);
+    await page.goto(invite);
+    await expect(page).toHaveURL(friends);
+
+    await page.getByRole("link", { name: "My exchanges" }).click();
+    await expect(page.getByRole("link", { name: "Friends exchange Member" })).toBeVisible();
+    await page.getByRole("link", { name: "Family exchange" }).click();
+    await expect(page).toHaveURL(family);
+    await expect(page.getByRole("heading", { name: "Organizer tools" })).toBeVisible();
+    await expect(page.locator("#wish-list").getByText("Family wish")).toBeVisible();
+
+    await page.getByRole("link", { name: "My exchanges" }).click();
+    await page.getByRole("link", { name: "Create an exchange" }).click();
+    await page.getByLabel("Group name").fill("Office exchange");
+    await page.getByLabel("Your display name").fill("Office organizer");
+    await page.getByRole("button", { name: "Create group" }).click();
+    await expect(page.getByRole("heading", { name: "Office exchange" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Organizer tools" })).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+test("codename mode hides the match's identity but keeps their wish list", async ({ page, browser }) => {
+  const organizerName = "Real Organizer Name";
+  await signIn(page, "/", `codename-host-${randomUUID()}@example.test`);
+  await page.getByLabel("Group name").fill("Secret Identities");
+  await page.getByLabel("Your display name").fill(organizerName);
+  await page.getByRole("button", { name: "Create group" }).click();
+  const invite = await page.getByLabel("Invitation link").inputValue();
+  const organizerId = await page.locator('input[name="actingMembershipId"]').first().inputValue();
+  await addressAndWish(page, "Hidden");
+
+  const context = await browser.newContext({ baseURL: origin });
+  try {
+    const guest = await context.newPage();
+    await signIn(guest, invite, `codename-guest-${randomUUID()}@example.test`);
+    await guest.getByLabel("Your display name").fill("Guest");
+    await guest.getByRole("button", { name: "Join group" }).click();
+    await expect(guest).toHaveURL(/\/exchange\/[a-f0-9-]{36}$/);
+
+    await page.reload();
+    await page.getByRole("button", { name: "Enable codename mode" }).click();
+    await expect(page.getByRole("button", { name: "Disable codename mode" })).toBeVisible();
+    await page.getByRole("button", { name: "Draw names", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Redraw names", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Disable codename mode" })).toHaveCount(0);
+
+    await guest.reload();
+    const match = guest.locator("#recipient");
+    await match.getByText("Unwrap match", { exact: true }).click();
+    const alias = await match.locator(".recipient-name").innerText();
+    expect(alias).toBeTruthy();
+    expect(alias).not.toBe(organizerName);
+    await expect(page.getByText("Your codename is", { exact: false })).toContainText(alias);
+    await expect(match.getByText("Hidden wish", { exact: true })).toBeVisible();
+    await expect(match.locator("address")).toHaveCount(0);
+    const html = await (await guest.request.get(guest.url())).text();
+    for (const identity of [organizerName, organizerId, "100 Hidden Lane"]) expect(html).not.toContain(identity);
+
+    await guest.reload();
+    await match.getByText("Unwrap match", { exact: true }).click();
+    await expect(match.locator(".recipient-name")).toHaveText(alias);
+  } finally {
+    await context.close();
+  }
+});
+
 test("a mobile group runs two private annual exchanges and shares Little Ones gifts", async ({ page, browser }) => {
   const slug = randomUUID().slice(0, 8);
   const email = (name: string) => `${name.toLowerCase()}-${slug}@example.test`;
@@ -69,7 +178,7 @@ test("a mobile group runs two private annual exchanges and shares Little Ones gi
   await page.getByLabel("First exchange year").fill("2026");
   await page.getByLabel("Your display name").fill("Alex");
   await page.getByRole("button", { name: "Create group" }).click();
-  await expect(page).toHaveURL(/\/exchange$/);
+  await expect(page).toHaveURL(/\/exchange\/[a-f0-9-]{36}$/);
   const invite = await page.getByLabel("Invitation link").inputValue();
   expect(invite).toMatch(/\/join\?code=/);
   await page.getByRole("button", { name: "Copy link" }).click();
@@ -85,7 +194,7 @@ test("a mobile group runs two private annual exchanges and shares Little Ones gi
       await signIn(participant, invite, email(name));
       await participant.getByLabel("Your display name").fill(name);
       await participant.getByRole("button", { name: "Join group" }).click();
-      await expect(participant).toHaveURL(/\/exchange$/);
+      await expect(participant).toHaveURL(/\/exchange\/[a-f0-9-]{36}$/);
       await expect(participant.getByRole("heading", { name: "Organizer tools" })).toHaveCount(0);
     }
 
@@ -103,7 +212,7 @@ test("a mobile group runs two private annual exchanges and shares Little Ones gi
     const bailey = pages.get("Bailey")!;
     await bailey.reload();
     const actingMembershipId = await page.locator('input[name="actingMembershipId"]').first().inputValue();
-    const stale = await bailey.request.post("/exchange", {
+    const stale = await bailey.request.post(bailey.url(), {
       headers: { Origin: origin },
       form: { intent: "add-child", actingMembershipId, name: "Stale child", age: "8" },
     });

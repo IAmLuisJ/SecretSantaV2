@@ -3,14 +3,21 @@ import { isIP } from "node:net";
 import { betterAuth } from "better-auth";
 import { emailOTP } from "better-auth/plugins/email-otp";
 import type { Env } from "../env.ts";
-import { isLoopbackOrigin, sendDirect } from "./mail.ts";
+import { maxPasswordLength, minPasswordLength } from "../password.ts";
+import { isLoopbackOrigin, mailAvailable, sendDirect } from "./mail.ts";
 
 const basePath = "/api/auth";
 const sendPath = basePath + "/email-otp/send-verification-otp";
 const verifyPath = basePath + "/sign-in/email-otp";
+const passwordPath = basePath + "/sign-in/email";
+const registerPath = basePath + "/sign-up/email";
 const signOutPath = basePath + "/sign-out";
 const windowSeconds = 15 * 60;
 const otpSeconds = 5 * 60;
+
+export function emailSignInEnabled(env: Env, origin: string): boolean {
+  return env.EMAIL_SIGN_IN_ENABLED?.trim().toLowerCase() !== "false" && mailAvailable(env, origin);
+}
 
 function allowedOrigin(env: Env, origin: string): boolean {
   const local = isLoopbackOrigin(origin);
@@ -24,6 +31,7 @@ function digest(secret: string, purpose: string, input: string): string {
 }
 
 function createAuth(env: Env, origin: string, onDeliveryFailure?: () => void) {
+  const emailSignIn = emailSignInEnabled(env, origin);
   return betterAuth({
     appName: "Gift Exchange For Friends",
     baseURL: origin,
@@ -43,9 +51,15 @@ function createAuth(env: Env, origin: string, onDeliveryFailure?: () => void) {
       database: { validateSchema: false },
       ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
     },
-    // The public OTP routes apply atomic per-IP and per-email limits in D1.
+    // The auth routes apply atomic per-IP and per-email limits in D1.
     rateLimit: { enabled: false },
-    plugins: [emailOTP({
+    emailAndPassword: {
+      enabled: true,
+      disableSignUp: emailSignIn,
+      minPasswordLength,
+      maxPasswordLength,
+    },
+    plugins: emailSignIn ? [emailOTP({
       otpLength: 6,
       expiresIn: otpSeconds,
       allowedAttempts: 3,
@@ -65,7 +79,7 @@ function createAuth(env: Env, origin: string, onDeliveryFailure?: () => void) {
           onDeliveryFailure?.();
         }
       },
-    })],
+    })] : [],
   });
 }
 
@@ -113,11 +127,17 @@ export async function handleAuth(request: Request, env: Env, _executionContext?:
   if (!allowedOrigin(env, url.origin) || request.headers.get("Origin") !== url.origin) {
     return reject(403, "Untrusted request origin.");
   }
-  if (![sendPath, verifyPath, signOutPath].includes(url.pathname)) return reject(404, "Not found.");
+  const emailSignIn = emailSignInEnabled(env, url.origin);
+  const { pathname } = url;
+  const usingCode = pathname === sendPath || pathname === verifyPath;
+  const signingUp = pathname === registerPath;
+  if (!(pathname === signOutPath || pathname === passwordPath || (usingCode && emailSignIn) || (signingUp && !emailSignIn))) {
+    return reject(404, "Not found.");
+  }
   if (request.method !== "POST") return reject(405, "Method not allowed.", { Allow: "POST" });
 
   let body: Record<string, string> = {};
-  if (url.pathname !== signOutPath) {
+  if (pathname !== signOutPath) {
     if (!request.headers.get("Content-Type")?.match(/^application\/json(?:\s*;|$)/i)) {
       return reject(415, "Expected a JSON request.");
     }
@@ -125,14 +145,20 @@ export async function handleAuth(request: Request, env: Env, _executionContext?:
     if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
       return reject(400, "Invalid request.");
     }
-    const { email: submittedEmail, otp, type } = incoming as { email?: unknown; otp?: unknown; type?: unknown };
+    const { email: submittedEmail, otp, type, password } = incoming as Record<string, unknown>;
     const email = typeof submittedEmail === "string" ? submittedEmail.trim().toLowerCase() : "";
     if (email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
       return reject(400, "Enter a valid email address.");
     }
 
-    const sending = url.pathname === sendPath;
-    if (sending) {
+    const sending = pathname === sendPath;
+    if (!usingCode) {
+      if (typeof password !== "string" || !password || password.length > maxPasswordLength
+        || (signingUp && password.length < minPasswordLength)) {
+        return reject(400, "Enter a valid password.");
+      }
+      body = signingUp ? { email, password, name: "" } : { email, password };
+    } else if (sending) {
       if (type !== "sign-in") return reject(400, "Invalid code type.");
       body = { email, type };
     } else {
@@ -140,10 +166,18 @@ export async function handleAuth(request: Request, env: Env, _executionContext?:
       body = { email, otp };
     }
 
-    const scope = sending ? "send" : "verify";
-    const ipAllowed = await useLimit(env, scope + ":ip", clientNetwork(request, url.origin), sending ? 20 : 80);
-    const emailAllowed = ipAllowed && await useLimit(env, scope + ":email", email, sending ? 4 : 12, sending ? 45 : 0);
+    const [scope, ipMax, emailMax] = signingUp ? ["register", 10, 4] as const
+      : !usingCode ? ["password", 30, 10] as const
+      : sending ? ["send", 20, 4] as const : ["verify", 80, 12] as const;
+    const ipAllowed = await useLimit(env, scope + ":ip", clientNetwork(request, url.origin), ipMax);
+    const emailAllowed = ipAllowed && await useLimit(env, scope + ":email", email, emailMax, sending ? 45 : 0);
     if (!emailAllowed) return reject(429, "Too many attempts. Wait and try again.", { "Retry-After": "45" });
+
+    // Password accounts can hold private group data even though they haven't
+    // proven ownership of their address. A code must never claim that account.
+    if (pathname === verifyPath && await env.DB.prepare('SELECT 1 FROM "user" WHERE email = ? AND emailVerified = 0').bind(email).first()) {
+      return reject(400, "That code is invalid or expired. Request a new code.");
+    }
   }
 
   const headers = new Headers(request.headers);
@@ -155,9 +189,11 @@ export async function handleAuth(request: Request, env: Env, _executionContext?:
   const auth = createAuth(env, url.origin, () => { deliveryFailed = true; });
   const result = await auth.handler(authRequest);
   if (deliveryFailed || result.status >= 500) return reject(503, "Sign-in is temporarily unavailable.");
-  if (url.pathname === verifyPath && !result.ok) {
+  if (pathname === verifyPath && !result.ok) {
     return reject(400, "That code is invalid or expired. Request a new code.");
   }
+  if (signingUp && !result.ok) return reject(400, "Could not create an account.");
+  if (pathname === passwordPath && !result.ok) return reject(401, "Email address or password is incorrect.");
   const response = new Response(result.body, result);
   response.headers.set("Cache-Control", "no-store");
   return response;

@@ -1,7 +1,9 @@
 import { findDraw, type Assignment, type Exclusion } from "./matching.ts";
 import { MembershipChanged } from "./actor.ts";
+import { drawCodenames } from "./codenames.ts";
+import { exchangePath, type ExchangeSummary } from "../types.ts";
 
-type VerifiedUser = { id: string; email: string };
+type SignedInUser = { id: string; email: string };
 type Role = "organizer" | "member";
 type Invite = { name: string; description: string; code: string };
 type Membership = Invite & { groupId: string; membershipId: string; role: Role };
@@ -31,13 +33,20 @@ function shareCode() {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => codeAlphabet[byte % 32]).join("");
 }
 
-function membership(db: D1Database, userId: string) {
+function membership(db: D1Database, userId: string, groupId: string) {
   return db.prepare(`
     SELECT m.id AS membershipId, g.id AS groupId, g.name, g.description, g.code, m.role
     FROM memberships m JOIN groups g ON g.id = m.group_id
-    JOIN "user" u ON u.id = m.user_id AND u.emailVerified = 1
-    WHERE m.user_id = ?
-  `).bind(userId).first<Membership>();
+    WHERE m.user_id = ? AND m.group_id = ?
+  `).bind(userId, groupId).first<Membership>();
+}
+
+export async function listExchanges(db: D1Database, userId: string) {
+  const { results } = await db.prepare(`
+    SELECT g.id, g.name, m.role FROM memberships m JOIN groups g ON g.id = m.group_id
+    WHERE m.user_id = ? ORDER BY g.name COLLATE NOCASE, g.id
+  `).bind(userId).all<ExchangeSummary>();
+  return results;
 }
 
 export function getInvite(db: D1Database, rawCode: string) {
@@ -46,20 +55,30 @@ export function getInvite(db: D1Database, rawCode: string) {
   return db.prepare("SELECT name, description, code FROM groups WHERE code = ?").bind(code).first<Invite>();
 }
 
-function welcome(db: D1Database, membershipId: string, origin?: string) {
+export async function joinedGroupId(db: D1Database, userId: string, code: string) {
+  const row = await db.prepare(`
+    SELECT m.group_id AS id FROM memberships m JOIN groups g ON g.id = m.group_id
+    WHERE m.user_id = ? AND g.code = ?
+  `).bind(userId, code).first<{ id: string }>();
+  return row?.id;
+}
+
+function welcome(db: D1Database, membershipId: string, origin: string | undefined, mailEnabled: boolean) {
   return db.prepare(`
     INSERT INTO email_outbox(event_key, kind, group_id, recipient, subject, body)
     SELECT 'welcome:' || m.id, 'welcome', m.group_id, m.email, 'Welcome to your gift exchange',
-      'You joined ' || g.name || '. Happy gifting!' || ?
-    FROM memberships m JOIN groups g ON g.id = m.group_id WHERE m.id = ?
-  `).bind(origin ? `\n\nOpen your exchange: ${new URL("/exchange", origin)}` : "", membershipId);
+      'You joined ' || g.name || '. Happy gifting!' || COALESCE(? || g.id, '')
+    FROM memberships m JOIN groups g ON g.id = m.group_id
+    JOIN "user" u ON u.id = m.user_id AND u.emailVerified = 1 WHERE m.id = ? AND ?
+  `).bind(origin ? `\n\nOpen your exchange: ${new URL(exchangePath(""), origin)}` : null, membershipId, Number(mailEnabled));
 }
 
 export async function createGroup(
   db: D1Database,
-  user: VerifiedUser,
+  user: SignedInUser,
   input: { name: string; description: string; year: number | string; displayName: string },
   origin?: string,
+  mailEnabled = true,
 ) {
   const name = requiredName(input.name, "a group name");
   const displayName = requiredName(input.displayName, "a display name");
@@ -74,8 +93,7 @@ export async function createGroup(
     db.prepare(`
       INSERT INTO groups(id, name, description, code)
       SELECT ?, ?, ?, ? FROM "user" u
-      WHERE u.id = ? AND u.emailVerified = 1
-        AND NOT EXISTS (SELECT 1 FROM memberships WHERE user_id = u.id)
+      WHERE u.id = ?
     `).bind(groupId, name, description, shareCode(), user.id),
     db.prepare(`
       INSERT INTO memberships(id, group_id, user_id, email, name, role)
@@ -89,25 +107,27 @@ export async function createGroup(
       INSERT INTO season_participants(group_id, season_id, membership_id)
       SELECT group_id, ?, id FROM memberships WHERE id = ?
     `).bind(seasonId, memberId),
-    welcome(db, memberId, origin),
+    welcome(db, memberId, origin, mailEnabled),
   ]);
-  if (!created.meta.changes) throw new ExchangeError("Verify your email and make sure you do not already belong to a group.");
+  if (!created.meta.changes) throw new ExchangeError("Sign in again to create your group.");
+  return groupId;
 }
 
 export async function joinGroup(
-  db: D1Database, user: VerifiedUser, rawCode: string, rawName: string, origin?: string,
+  db: D1Database, user: SignedInUser, rawCode: string, rawName: string, origin?: string, mailEnabled = true,
 ) {
   const code = rawCode.trim().toUpperCase();
   if (!/^[A-Z2-7]{16}$/.test(code)) throw new ExchangeError("Enter a valid invitation code.");
   const name = requiredName(rawName, "a display name");
   const memberId = crypto.randomUUID();
 
-  const [joined] = await db.batch([
+  await db.batch([
     db.prepare(`
       INSERT INTO memberships(id, group_id, user_id, email, name, role)
       SELECT ?, g.id, u.id, lower(u.email), ?, 'member'
-      FROM groups g JOIN "user" u ON u.id = ? AND u.emailVerified = 1
-      WHERE g.code = ? AND NOT EXISTS (SELECT 1 FROM memberships WHERE user_id = u.id)
+      FROM groups g JOIN "user" u ON u.id = ?
+      WHERE g.code = ?
+      ON CONFLICT(user_id, group_id) DO NOTHING
     `).bind(memberId, name, user.id, code),
     db.prepare(`
       INSERT INTO season_participants(group_id, season_id, membership_id)
@@ -118,22 +138,20 @@ export async function joinGroup(
       UPDATE seasons SET revision = revision + 1
       WHERE id = (SELECT season_id FROM season_participants WHERE membership_id = ?)
     `).bind(memberId),
-    welcome(db, memberId, origin),
+    welcome(db, memberId, origin, mailEnabled),
   ]);
-  if (joined.meta.changes) return;
-
-  const current = await membership(db, user.id);
-  if (current?.code === code) return;
-  if (current) throw new ExchangeError("You already belong to a group.");
-  throw new ExchangeError("This invitation is unavailable. Check the code and verify your email.");
+  const groupId = await joinedGroupId(db, user.id, code);
+  if (groupId) return groupId;
+  throw new ExchangeError("This invitation is unavailable. Check the code and try again.");
 }
 
-export async function getExchange(db: D1Database, userId: string) {
+export async function getExchange(db: D1Database, userId: string, groupId: string) {
   const row = await db.prepare(`
     SELECT g.id AS groupId, g.name, g.description, g.code,
       self.id AS selfId, self.name AS selfName, self.role,
       s.id AS seasonId, s.year, s.completed, s.revision, d.id AS drawId, d.revision AS drawRevision,
-      recipient.id AS recipientId, recipient.name AS recipientName,
+      s.codename_mode AS codenameMode, own_alias.codename AS selfCodename, a.recipient_id AS recipientId,
+      CASE WHEN s.codename_mode = 1 THEN a.codename ELSE recipient.name END AS recipientName,
       CASE WHEN self.role = 'organizer' THEN (
         SELECT json_group_array(json_object(
           'id', m.id, 'name', m.name, 'email', m.email, 'eligible', coalesce(p.eligible, 0)
@@ -157,33 +175,33 @@ export async function getExchange(db: D1Database, userId: string) {
           AND (e.draw_id IS NULL OR e.draw_id = d.id)
       ) ELSE 0 END AS mailFailures
     FROM memberships self
-    JOIN "user" u ON u.id = self.user_id AND u.emailVerified = 1
     JOIN groups g ON g.id = self.group_id
     LEFT JOIN seasons s ON s.id = (SELECT id FROM seasons WHERE group_id = g.id ORDER BY year DESC LIMIT 1)
     LEFT JOIN draws d ON d.id = s.active_draw_id
     LEFT JOIN assignments a ON a.draw_id = d.id AND a.giver_id = self.id
+    LEFT JOIN assignments own_alias ON own_alias.draw_id = d.id AND own_alias.recipient_id = self.id AND s.codename_mode = 1
     LEFT JOIN memberships recipient ON recipient.id = a.recipient_id
-    WHERE self.user_id = ?
-  `).bind(userId).first<{
+    WHERE self.user_id = ? AND self.group_id = ?
+  `).bind(userId, groupId).first<{
     groupId: string; name: string; description: string; code: string;
-    selfId: string; selfName: string; role: Role;
+    selfId: string; selfName: string; selfCodename: string | null; role: Role;
     seasonId: string | null; year: number; completed: number; revision: number; drawId: string | null; drawRevision: number | null;
-    recipientId: string | null; recipientName: string;
+    codenameMode: number | null; recipientId: string | null; recipientName: string | null;
     members: string; exclusions: string; waitingCount: number; mailFailures: number;
   }>();
   if (!row) return null;
   return {
     group: { id: row.groupId, name: row.name, description: row.description, code: row.code },
-    self: { id: row.selfId, name: row.selfName, role: row.role },
+    self: { id: row.selfId, name: row.selfName, codename: row.selfCodename, role: row.role },
     season: row.seasonId ? {
       id: row.seasonId, year: row.year, completed: Boolean(row.completed),
-      revision: row.revision, drawId: row.drawId, drawRevision: row.drawRevision,
+      revision: row.revision, drawId: row.drawId, drawRevision: row.drawRevision, codenameMode: Boolean(row.codenameMode),
     } : null,
     members: (JSON.parse(row.members) as MemberRow[])
       .map((member) => ({ ...member, eligible: Boolean(member.eligible) }))
       .sort((first, second) => first.name.localeCompare(second.name)),
     exclusions: JSON.parse(row.exclusions) as Exclusion[],
-    recipient: row.recipientId ? { id: row.recipientId, name: row.recipientName } : null,
+    recipient: row.recipientId && row.recipientName !== null ? { id: row.recipientId, name: row.recipientName } : null,
     waitingCount: row.waitingCount,
     mailFailures: row.mailFailures,
   };
@@ -287,7 +305,7 @@ async function changeExclusion(db: D1Database, groupId: string, form: FormData, 
   return "Exclusion removed.";
 }
 
-async function publishDraw(db: D1Database, group: Membership, form: FormData, origin: string) {
+async function publishDraw(db: D1Database, group: Membership, form: FormData, origin: string, mailEnabled: boolean) {
   const reference = seasonReference(form);
   const requestKey = field(form, "requestId");
   if (!requestKey || requestKey.length > 100) throw new ExchangeError("Refresh the page before running the draw.");
@@ -296,7 +314,7 @@ async function publishDraw(db: D1Database, group: Membership, form: FormData, or
     .bind(groupId, reference.id, requestKey);
 
   const [seasons, participants, exclusions, history, existing] = await db.batch([
-    db.prepare("SELECT id, year, completed, revision, active_draw_id AS drawId FROM seasons WHERE group_id = ? AND id = ?")
+    db.prepare("SELECT id, year, completed, revision, active_draw_id AS drawId, codename_mode AS codenameMode FROM seasons WHERE group_id = ? AND id = ?")
       .bind(groupId, reference.id),
     db.prepare("SELECT membership_id AS id FROM season_participants WHERE group_id = ? AND season_id = ? AND eligible = 1")
       .bind(groupId, reference.id),
@@ -311,7 +329,7 @@ async function publishDraw(db: D1Database, group: Membership, form: FormData, or
   ]);
   if (existing.results.length) return "This draw was already published.";
 
-  const current = seasons.results[0] as SeasonHead | undefined;
+  const current = seasons.results[0] as (SeasonHead & { codenameMode: number }) | undefined;
   if (!current || current.completed || current.revision !== reference.revision || current.drawId !== reference.drawId) {
     throw new ExchangeError(seasonChanged);
   }
@@ -320,9 +338,11 @@ async function publishDraw(db: D1Database, group: Membership, form: FormData, or
   const roster = (participants.results as { id: string }[]).map(({ id }) => id);
   const assignments = findDraw(roster, exclusions.results as Exclusion[], history.results as Assignment[]);
   if (!assignments) throw new ExchangeError("There is no complete draw for this roster and its exclusions and repeat rules.");
+  const codenames = current.codenameMode ? drawCodenames(assignments.length) : [];
+  const matches = assignments.map((assignment, index) => ({ ...assignment, codename: codenames[index] ?? null }));
 
   const id = crypto.randomUUID();
-  const [published] = await db.batch([
+  const [published, , , , notifications] = await db.batch([
     db.prepare(`
       INSERT INTO draws(id, group_id, season_id, revision, request_key)
       SELECT ?, group_id, id, revision, ? FROM seasons
@@ -330,10 +350,11 @@ async function publishDraw(db: D1Database, group: Membership, form: FormData, or
       ON CONFLICT(season_id, request_key) DO NOTHING
     `).bind(id, requestKey, reference.id, groupId, reference.revision, reference.drawId),
     db.prepare(`
-      INSERT INTO assignments(draw_id, season_id, giver_id, recipient_id)
-      SELECT d.id, d.season_id, json_extract(edge.value, '$.giverId'), json_extract(edge.value, '$.recipientId')
+      INSERT INTO assignments(draw_id, season_id, giver_id, recipient_id, codename)
+      SELECT d.id, d.season_id, json_extract(edge.value, '$.giverId'),
+        json_extract(edge.value, '$.recipientId'), json_extract(edge.value, '$.codename')
       FROM draws d CROSS JOIN json_each(?) edge WHERE d.id = ?
-    `).bind(JSON.stringify(assignments), id),
+    `).bind(JSON.stringify(matches), id),
     db.prepare(`
       UPDATE seasons SET active_draw_id = ? WHERE id = ? AND EXISTS (SELECT 1 FROM draws WHERE id = ?)
     `).bind(id, reference.id, id),
@@ -345,12 +366,31 @@ async function publishDraw(db: D1Database, group: Membership, form: FormData, or
       INSERT INTO email_outbox(event_key, kind, group_id, draw_id, recipient, subject, body)
       SELECT 'draw:' || d.id || ':' || m.id, 'draw', d.group_id, d.id, m.email, ?, ?
       FROM draws d JOIN assignments a ON a.draw_id = d.id
-      JOIN memberships m ON m.id = a.giver_id WHERE d.id = ?
-    `).bind("Your Secret Santa draw is ready", `Sign in to see your recipient for ${group.name}.\n\n${new URL("/", origin)}`, id),
+      JOIN memberships m ON m.id = a.giver_id
+      JOIN "user" u ON u.id = m.user_id AND u.emailVerified = 1 WHERE d.id = ? AND ?
+    `).bind("Your Secret Santa draw is ready", `Sign in to see your recipient for ${group.name}.\n\n${new URL(exchangePath(group.groupId), origin)}`, id, Number(mailEnabled)),
   ]);
-  if (published.meta.changes) return "Draw published. Notifications are queued.";
+  if (published.meta.changes) {
+    if (!notifications.meta.changes) return "Draw published. Everyone can sign in to see their match.";
+    if (notifications.meta.changes < assignments.length) return "Draw published. Remind anyone who uses a password to sign in for their match.";
+    return "Draw published. Notifications are queued.";
+  }
   if (await alreadyPublished.first()) return "This draw was already published.";
   throw new ExchangeError(seasonChanged);
+}
+
+async function setCodenameMode(db: D1Database, groupId: string, form: FormData) {
+  const { id, revision } = seasonReference(form);
+  const enabled = field(form, "enabled");
+  if (enabled !== "0" && enabled !== "1") throw new ExchangeError("Choose whether to use codenames.");
+  const result = await db.prepare(`
+    UPDATE seasons SET codename_mode = ?, revision = revision + 1
+    WHERE id = ? AND group_id = ? AND revision = ? AND completed = 0 AND active_draw_id IS NULL
+  `).bind(Number(enabled), id, groupId, revision).run();
+  if (!result.meta.changes) {
+    throw new ExchangeError("You can only change codename mode before the first draw. Refresh the page and try again.");
+  }
+  return enabled === "1" ? "Codename mode is on." : "Codename mode is off.";
 }
 
 async function finishSeason(db: D1Database, groupId: string, form: FormData, complete: boolean) {
@@ -394,20 +434,24 @@ async function emailInvite(db: D1Database, group: Membership, form: FormData, or
   return "Invitation queued.";
 }
 
-export async function mutateExchange(db: D1Database, userId: string, form: FormData, origin: string, expectedMemberId?: string) {
-  const group = await membership(db, userId);
+export async function mutateExchange(db: D1Database, userId: string, groupId: string, form: FormData, origin: string, expectedMemberId?: string, mailEnabled = true) {
+  const group = await membership(db, userId, groupId);
   if (expectedMemberId !== undefined && group?.membershipId !== expectedMemberId) throw new MembershipChanged();
   if (!group) throw new ExchangeError("Join a group before managing an exchange.");
   const intent = field(form, "intent");
-  if (intent === "invite") return emailInvite(db, group, form, origin);
+  if (intent === "invite") {
+    if (!mailEnabled) throw new ExchangeError("Email invitations are unavailable. Share the invitation link instead.");
+    return emailInvite(db, group, form, origin);
+  }
   if (group.role !== "organizer") throw new ExchangeError("Only the organizer can make this change.");
 
   switch (intent) {
     case "start-season": return startSeason(db, group.groupId, validYear(field(form, "year")));
+    case "set-codename-mode": return setCodenameMode(db, group.groupId, form);
     case "set-roster": return setRoster(db, group.groupId, form);
     case "add-exclusion": return changeExclusion(db, group.groupId, form, true);
     case "remove-exclusion": return changeExclusion(db, group.groupId, form, false);
-    case "draw": return publishDraw(db, group, form, origin);
+    case "draw": return publishDraw(db, group, form, origin, mailEnabled);
     case "complete-season": return finishSeason(db, group.groupId, form, true);
     case "discard-season": return finishSeason(db, group.groupId, form, false);
     case "delete-group":

@@ -5,5 +5,6 @@ export type Env = {
   APP_ORIGIN?: string;
   RESEND_API_KEY?: string;
   MAIL_FROM?: string;
+  EMAIL_SIGN_IN_ENABLED?: string;
   LOCAL_MAIL?: string;
 };

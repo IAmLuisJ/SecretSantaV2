@@ -11,6 +11,8 @@ function required(key: string): string {
 export default defineConfig(({ mode }) => {
   const remote = mode === "production" || mode === "staging";
   const origin = remote ? required("SANTA_APP_ORIGIN") : `http://127.0.0.1:${process.env.SANTA_LOCAL_PORT ?? "5173"}`;
+  const emailSignIn = process.env.SANTA_EMAIL_SIGN_IN_ENABLED?.trim().toLowerCase() !== "false";
+  const sender = process.env.SANTA_MAIL_FROM?.trim();
   if (remote && (new URL(origin).protocol !== "https:" || new URL(origin).origin !== origin)) {
     throw new Error("SANTA_APP_ORIGIN must be an HTTPS origin without a trailing slash.");
   }
@@ -26,12 +28,11 @@ export default defineConfig(({ mode }) => {
         PHOTOS: bindings.r2({ name: remote ? required("SANTA_R2_BUCKET") : "secret-santa-v2-local" }),
         APP_ORIGIN: bindings.text(origin),
         BETTER_AUTH_SECRET: bindings.secret(),
-        ...(remote ? {
-          RESEND_API_KEY: bindings.secret(),
-          MAIL_FROM: bindings.text(required("SANTA_MAIL_FROM")),
-        } : {
+        EMAIL_SIGN_IN_ENABLED: bindings.text(String(emailSignIn)),
+        ...(remote && sender ? { MAIL_FROM: bindings.text(sender) } : {}),
+        ...(remote ? { RESEND_API_KEY: bindings.secret() } : emailSignIn ? {
           LOCAL_MAIL: bindings.text("log"),
-        }),
+        } : {}),
       },
       triggers: [triggers.scheduled({ schedule: "*/2 * * * *" })],
       observability: {

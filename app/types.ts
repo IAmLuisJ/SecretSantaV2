@@ -1,10 +1,16 @@
 export type User = { id: string; email: string };
 export type Invite = { code: string; name: string; description: string };
 export type Values = Record<string, string>;
+export type EntryStep = "email" | "code" | "password" | "register" | "group";
+export type ExchangeSummary = { id: string; name: string; role: "organizer" | "member" };
+
+export function exchangePath(groupId: string) {
+  return `/exchange/${encodeURIComponent(groupId)}`;
+}
 
 export type Exchange = {
   group: Invite & { id: string };
-  self: { id: string; name: string; role: "organizer" | "member" };
+  self: { id: string; name: string; codename: string | null; role: "organizer" | "member" };
   members: { id: string; name: string; email: string; eligible: boolean }[];
   season: {
     id: string;
@@ -13,9 +19,10 @@ export type Exchange = {
     revision: number;
     drawId: string | null;
     drawRevision: number | null;
+    codenameMode: boolean;
   } | null;
   exclusions: { firstId: string; secondId: string }[];
-  recipient: { id: string; name: string } | null;
+  recipient: { name: string } | null;
   waitingCount: number;
   mailFailures: number;
 };
@@ -49,5 +56,6 @@ export type DashboardData = {
   recipientItems: GiftItem[];
   children: Child[];
   inviteUrl: string;
+  mailEnabled: boolean;
   requestId: string;
 };

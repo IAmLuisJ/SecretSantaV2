@@ -40,6 +40,11 @@ export function isLoopbackOrigin(origin: string): boolean {
     && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
 }
 
+export function mailAvailable(env: Env, origin = env.APP_ORIGIN): boolean {
+  return Boolean((env.RESEND_API_KEY?.trim() && env.MAIL_FROM?.trim())
+    || (env.LOCAL_MAIL === "log" && origin && isLoopbackOrigin(origin)));
+}
+
 export async function sendDirect(
   env: Env,
   mail: Mail,
@@ -66,7 +71,8 @@ export async function sendDirect(
       method: "POST",
       headers,
       body: JSON.stringify({ from, to: [mail.to], subject: mail.subject, text: mail.text }),
-      redirect: "error",
+      // Workers supports manual redirects. Never forward the Resend key to another URL.
+      redirect: "manual",
       signal: AbortSignal.timeout(requestTimeoutMs),
     });
   } catch {

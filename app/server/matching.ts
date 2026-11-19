@@ -1,7 +1,7 @@
 export type Exclusion = { firstId: string; secondId: string };
 export type Assignment = { giverId: string; recipientId: string };
 
-function shuffle<T>(items: T[]) {
+export function shuffle<T>(items: T[]) {
   for (let index = items.length - 1; index > 0; index--) {
     const other = Math.floor(Math.random() * (index + 1));
     [items[index], items[other]] = [items[other], items[index]];

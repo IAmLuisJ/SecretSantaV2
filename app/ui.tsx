@@ -2,7 +2,8 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Form, Link, useLocation, useNavigation } from "react-router";
 import { ChristmasTree, HolidayStar, WrappedGift } from "./holiday-art";
-import type { Address, DashboardData, GiftItem, Invite, User, Values } from "./types";
+import { maxPasswordLength, minPasswordLength } from "./password";
+import { exchangePath, type Address, type DashboardData, type EntryStep, type ExchangeSummary, type GiftItem, type Invite, type User, type Values } from "./types";
 import "./styles.css";
 
 const MembershipContext = createContext<string | null>(null);
@@ -10,10 +11,12 @@ const MembershipContext = createContext<string | null>(null);
 type EntryProps = {
   user: User | null;
   invite: Invite | null;
-  step: "email" | "code" | "group";
+  step: EntryStep;
+  emailSignIn: boolean;
   error?: string;
   values: Values;
   defaultYear: number;
+  hasExchanges: boolean;
 };
 
 type DashboardProps = {
@@ -72,7 +75,7 @@ function Feedback({ error, message }: { error?: string; message?: string }) {
   );
 }
 
-function ActionForm({ intent, action = "/exchange", children, className, upload = false, resetOn }: {
+function ActionForm({ intent, action, children, className, upload = false, resetOn }: {
   intent: string;
   action?: string;
   children: ReactNode;
@@ -145,9 +148,48 @@ function EntryHero({ title, children }: { title: ReactNode; children?: ReactNode
   );
 }
 
-export function Entry({ user, invite, step, error, values, defaultYear }: EntryProps) {
+export function ExchangeList({ exchanges, user, error, action }: {
+  exchanges: ExchangeSummary[];
+  user: User;
+  error?: string;
+  action: string;
+}) {
+  return (
+    <div className="entry">
+      <EntryHero title="My exchanges" />
+      <section className="entry-paper" aria-label="Your groups">
+        <Feedback error={error} />
+        <ul className="exchange-list">
+          {exchanges.map(({ id, name, role }) => (
+            <li key={id}>
+              <Link to={exchangePath(id)}>
+                <strong>{name}</strong>
+                <span className="section-note">{role === "organizer" ? "Organizer" : "Member"}</span>
+                <Icon name="arrow" />
+              </Link>
+            </li>
+          ))}
+        </ul>
+        <Link className="button button-secondary" to="/?new=1">Create an exchange</Link>
+        <ManualJoin />
+        <div className="signed-in-row"><span>{user.email}</span><SignOut action={action} /></div>
+      </section>
+    </div>
+  );
+}
+
+export function Entry({ user, invite, step, emailSignIn, error, values, defaultYear, hasExchanges }: EntryProps) {
   const location = useLocation();
   const action = location.pathname + location.search;
+  const authLink = (mode?: "password" | "register") => {
+    const params = new URLSearchParams(location.search);
+    if (mode) params.set("auth", mode);
+    else params.delete("auth");
+    const query = params.toString();
+    return location.pathname + (query ? `?${query}` : "");
+  };
+  const registering = step === "register";
+  const passwordIntent = registering ? "register" : "sign-in";
   const manualCode = location.pathname === "/join" && !invite
     ? new URLSearchParams(location.search).get("code") ?? undefined
     : undefined;
@@ -179,6 +221,7 @@ export function Entry({ user, invite, step, error, values, defaultYear }: EntryP
               <Submit intent="send-code">Send sign-in code</Submit>
             </ActionForm>
             <p className="entry-hint">We’ll send a six-digit code to your email.</p>
+            <Link className="button button-quiet" to={authLink("password")}>Sign in with a password</Link>
             {!invite && <ManualJoin code={manualCode} />}
           </>
         )}
@@ -202,8 +245,29 @@ export function Entry({ user, invite, step, error, values, defaultYear }: EntryP
             </div>
           </>
         )}
+        {(step === "password" || registering) && (
+          <>
+            <h2 id="entry-heading">{registering ? "Create your Secret Santa account" : invite ? "Sign in to join" : "Sign in to Secret Santa"}</h2>
+            <ActionForm key={step} intent={passwordIntent} action={action} className="form-stack" resetOn={values.email === undefined ? undefined : values}>
+              <label>Email address
+                <input type="email" name="email" autoComplete="username" defaultValue={values.email} maxLength={254} required />
+              </label>
+              <label>Password
+                <input type="password" name="password" autoComplete={registering ? "new-password" : "current-password"}
+                  minLength={registering ? minPasswordLength : undefined} maxLength={maxPasswordLength} required />
+              </label>
+              <Submit intent={passwordIntent}>{registering ? "Create account" : "Sign in"}</Submit>
+            </ActionForm>
+            {registering && <p className="entry-hint">Use at least {minPasswordLength} characters and save your password. Email password reset isn’t available.</p>}
+            {emailSignIn ? <Link className="button button-quiet" to={authLink()}>Sign in with an email code</Link>
+              : registering ? <Link className="button button-quiet" to={authLink()}>Back to sign in</Link>
+              : <Link className="button button-quiet" to={authLink("register")}>Create an account</Link>}
+            {!invite && <ManualJoin code={manualCode} />}
+          </>
+        )}
         {step === "group" && (
           <>
+            {hasExchanges && <Link className="button button-quiet" to="/">My exchanges</Link>}
             <h2 id="entry-heading">{invite ? "Join the exchange" : "Create an exchange"}</h2>
             <p>{invite ? "Enter the name your group will see." : "Set up your group, then send invitations."}</p>
             <ActionForm intent={invite ? "join-group" : "create-group"} action={action} className="form-stack">
@@ -379,9 +443,10 @@ function AddressEditor({ address, values, resetValues }: { address: Address | nu
   );
 }
 
-function Invitations({ group, inviteUrl, values, resetValues }: {
+function Invitations({ group, inviteUrl, mailEnabled, values, resetValues }: {
   group: DashboardData["exchange"]["group"];
   inviteUrl: string;
+  mailEnabled: boolean;
   values: Values;
   resetValues?: Values;
 }) {
@@ -411,7 +476,7 @@ function Invitations({ group, inviteUrl, values, resetValues }: {
       await navigator.share({ title: group.name, text: "Join our Secret Santa exchange.", url: inviteUrl });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      setShareMessage("Use Copy link or email the invitation.");
+      setShareMessage(mailEnabled ? "Use Copy link or email the invitation." : "Use Copy link to share the invitation.");
     }
   }
 
@@ -432,7 +497,7 @@ function Invitations({ group, inviteUrl, values, resetValues }: {
         </a>
       </div>
       <div className="share-status" role="status">{shareMessage}</div>
-      <details className="action-detail" open={Boolean(fields) || undefined}>
+      {mailEnabled && <details className="action-detail" open={Boolean(fields) || undefined}>
         <summary>Email an invitation</summary>
         <ActionForm intent="invite" className="form-stack" resetOn={fieldsFor(resetValues, "invite")}>
           <label>Email address
@@ -440,7 +505,7 @@ function Invitations({ group, inviteUrl, values, resetValues }: {
           </label>
           <Submit intent="invite">Send invitation</Submit>
         </ActionForm>
-      </details>
+      </details>}
     </section>
   );
 }
@@ -468,14 +533,21 @@ function Recipient({ data }: { data: DashboardData }) {
           </summary>
           <div>
             <div className="recipient-result">
-              <p className="reveal-label">You drew</p>
+              <p className="reveal-label">{season?.codenameMode ? "Your match’s codename" : "You drew"}</p>
               <h2 className="recipient-name">{recipient.name}</h2>
             </div>
             <div className="recipient-details">
-              <div>
-                <h3><Icon name="pin" /> Mailing address</h3>
-                {data.recipientAddress ? <MailingAddress address={data.recipientAddress} /> : <p className="empty-line">{recipient.name} hasn’t added a mailing address.</p>}
-              </div>
+              {season?.codenameMode ? (
+                <div>
+                  <h3>Label their gift</h3>
+                  <p>Use your match’s codename on their gift. Mailing addresses are hidden for this exchange.</p>
+                </div>
+              ) : (
+                <div>
+                  <h3><Icon name="pin" /> Mailing address</h3>
+                  {data.recipientAddress ? <MailingAddress address={data.recipientAddress} /> : <p className="empty-line">{recipient.name} hasn’t added a mailing address.</p>}
+                </div>
+              )}
               <div>
                 <h3>Wish list</h3>
                 <WishList items={data.recipientItems} mode="recipient" empty="Their wish list is empty for now." />
@@ -636,6 +708,16 @@ function Organizer({ data, values, resetValues }: { data: DashboardData; values:
           {season && isOpen ? (
             <>
               <p>Everyone on the roster gives and receives once. The draw also blocks repeat matches from the last completed exchange.</p>
+              {!season.drawId && (
+                <ActionForm intent="set-codename-mode" className="form-stack">
+                  <SeasonFields season={season} />
+                  <input type="hidden" name="enabled" value={season.codenameMode ? "0" : "1"} />
+                  <p>Codename mode is <strong>{season.codenameMode ? "on" : "off"}</strong>. It replaces match names with silly aliases and hides mailing addresses. Set it before the first draw.</p>
+                  <Submit intent="set-codename-mode" appearance="button-secondary">
+                    {season.codenameMode ? "Disable codename mode" : "Enable codename mode"}
+                  </Submit>
+                </ActionForm>
+              )}
               <ActionForm intent="draw" className="form-stack" key={`${season.id}-${season.revision}-${season.drawId}`}>
                 <SeasonFields season={season} includeDraw />
                 <input type="hidden" name="requestId" value={data.requestId} />
@@ -721,9 +803,10 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
     <MembershipContext value={self.id}>
       <div className="dashboard">
         <div className="dashboard-top">
-          <p className="section-note">Hi, {self.name}</p>
+          <Link className="button button-quiet" to="/">My exchanges</Link>
           <SignOut />
           <h1>{group.name}</h1>
+          <p className="section-note">Hi, {self.name}</p>
           {group.description && <p className="group-description multiline">{group.description}</p>}
         </div>
         <div className="exchange-status">
@@ -732,6 +815,7 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
             {season?.completed ? "Completed" : season?.drawId ? "Names drawn" : season ? "Waiting for the draw" : "Waiting for the next exchange"}
           </span>
         </div>
+        {self.codename && <p className="section-note">Your codename is <strong>{self.codename}</strong>. Look for it on your gift.</p>}
         {(error || message) && <div className="dashboard-feedback" tabIndex={-1} ref={feedback}><Feedback error={error} message={message} /></div>}
         <Recipient data={data} />
         <nav className="dashboard-nav" aria-label="In this exchange">
@@ -744,14 +828,14 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
           <section className="dashboard-section" id="wish-list" aria-labelledby="wish-list-heading">
             <span className="section-icon"><Icon name="gift" /></span>
             <h2 id="wish-list-heading">My wish list</h2>
-            <p>Your assigned giver can see your latest wishes here.</p>
+            <p>Your assigned giver can see your latest wishes here.{season?.codenameMode && " Keep names and other clues out of your wishes, links, and photos."}</p>
             <WishList items={data.items} mode="adult" empty="Add a wish to give your Secret Santa an idea." />
             <AddWish values={values} resetValues={resetValues} />
             <AddressEditor address={data.address} values={values} resetValues={resetValues} />
           </section>
           <LittleOnes children={data.children} values={values} resetValues={resetValues} />
         </div>
-        <Invitations group={group} inviteUrl={data.inviteUrl} values={values} resetValues={resetValues} />
+        <Invitations group={group} inviteUrl={data.inviteUrl} mailEnabled={data.mailEnabled} values={values} resetValues={resetValues} />
         {organizer && <Organizer data={data} values={values} resetValues={resetValues} />}
       </div>
     </MembershipContext>

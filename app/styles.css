@@ -510,6 +510,31 @@ details > p {
   font-weight: 750;
 }
 
+.exchange-list {
+  margin: 0 0 .9rem;
+  padding: 0;
+  list-style: none;
+}
+
+.exchange-list li + li {
+  border-top: 1px solid var(--rule);
+}
+
+.exchange-list a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .15rem .6rem;
+  min-height: 3rem;
+  padding: .6rem .25rem;
+  color: var(--evergreen);
+}
+
+.exchange-list a svg {
+  grid-area: 1 / 2 / span 2;
+  width: 1rem;
+}
+
 .tag {
   display: inline-flex;
   min-width: 0;

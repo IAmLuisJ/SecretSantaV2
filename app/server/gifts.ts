@@ -1,6 +1,7 @@
 import type { Env } from "../env.ts";
-import type { Address, Child, DashboardData, Exchange, GiftItem } from "../types.ts";
+import type { Address, Child, DashboardData, GiftItem } from "../types.ts";
 import { MembershipChanged } from "./actor.ts";
+import type { getExchange } from "./exchange.ts";
 
 export const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 
@@ -85,12 +86,12 @@ export async function inspectPhoto(file: File): Promise<string> {
   return type;
 }
 
-const latestRecipient = `
+const latestRecipient = (viewerId: "?" | "m.id") => `
   SELECT a.recipient_id
   FROM memberships viewer
   JOIN seasons s ON s.group_id = viewer.group_id
   JOIN assignments a ON a.draw_id = s.active_draw_id AND a.giver_id = viewer.id
-  WHERE viewer.user_id = ?
+  WHERE viewer.id = ${viewerId}
     AND s.id = (SELECT id FROM seasons WHERE group_id = viewer.group_id ORDER BY year DESC LIMIT 1)
 `;
 
@@ -115,18 +116,19 @@ function giftItem(row: ItemRow): GiftItem {
 
 export async function getDashboard(
   db: D1Database,
-  userId: string,
-  exchange: Exchange,
+  exchange: NonNullable<Awaited<ReturnType<typeof getExchange>>>,
   origin: string,
+  mailEnabled = true,
 ): Promise<DashboardData> {
-  const { group, self, recipient } = exchange;
+  const { group, self, recipient, season } = exchange;
+  const addressRecipient = season?.codenameMode ? "" : recipient?.id ?? "";
   const [address, items, children, childItems, recipientAddress, recipientItems] = await db.batch([
     db.prepare(`SELECT ${addressColumns} FROM addresses WHERE member_id = ?`).bind(self.id),
     db.prepare("SELECT * FROM gift_items WHERE owner_id = ? ORDER BY created_at, id").bind(self.id),
     db.prepare("SELECT id, name, age FROM children WHERE group_id = ? ORDER BY name, id").bind(group.id),
     db.prepare("SELECT * FROM gift_items WHERE group_id = ? AND child_id IS NOT NULL ORDER BY created_at, id").bind(group.id),
-    db.prepare(`SELECT ${addressColumns} FROM addresses WHERE member_id = ? AND member_id = (${latestRecipient})`).bind(recipient?.id ?? "", userId),
-    db.prepare(`SELECT * FROM gift_items WHERE owner_id = ? AND owner_id = (${latestRecipient}) ORDER BY created_at, id`).bind(recipient?.id ?? "", userId),
+    db.prepare(`SELECT ${addressColumns} FROM addresses WHERE member_id = ? AND member_id = (${latestRecipient("?")})`).bind(addressRecipient, self.id),
+    db.prepare(`SELECT * FROM gift_items WHERE owner_id = ? AND owner_id = (${latestRecipient("?")}) ORDER BY created_at, id`).bind(recipient?.id ?? "", self.id),
   ]);
   const byChild = new Map<string, GiftItem[]>();
   for (const row of childItems.results as ItemRow[]) {
@@ -136,7 +138,7 @@ export async function getDashboard(
     byChild.set(childId, list);
   }
   return {
-    exchange,
+    exchange: { ...exchange, recipient: recipient ? { name: recipient.name } : null },
     address: (address.results[0] as Address | undefined) ?? null,
     items: (items.results as ItemRow[]).map(giftItem),
     recipientAddress: (recipientAddress.results[0] as Address | undefined) ?? null,
@@ -146,20 +148,21 @@ export async function getDashboard(
       items: byChild.get(child.id) ?? [],
     })),
     inviteUrl: new URL(`/join?code=${encodeURIComponent(group.code)}`, origin).href,
+    mailEnabled,
     requestId: crypto.randomUUID(),
   };
 }
 
-export async function mutateGifts(env: Env, userId: string, form: FormData, expectedMemberId: string): Promise<string | null> {
+export async function mutateGifts(env: Env, userId: string, groupId: string, form: FormData, expectedMemberId: string): Promise<string | null> {
   const intent = form.get("intent");
   if (!["save-address", "add-child", "add-item", "delete-item", "set-purchased"].includes(String(intent))) {
     return null;
   }
   const db = env.DB;
-  const self = await db.prepare("SELECT id, group_id FROM memberships WHERE user_id = ?")
-    .bind(userId).first<{ id: string; group_id: string }>();
+  const self = await db.prepare("SELECT id FROM memberships WHERE user_id = ? AND group_id = ?")
+    .bind(userId, groupId).first<{ id: string }>();
   if (!self || self.id !== expectedMemberId) throw new MembershipChanged();
-  const { id, group_id: groupId } = self;
+  const { id } = self;
   switch (intent) {
     case "save-address": {
       const values = [
@@ -245,8 +248,8 @@ export async function readPhoto(env: Env, userId: string, id: string): Promise<R
     SELECT i.photo_key FROM gift_items i
     JOIN memberships m ON m.group_id = i.group_id AND m.user_id = ?
     WHERE i.id = ? AND i.photo_key IS NOT NULL
-      AND (i.child_id IS NOT NULL OR i.owner_id = m.id OR i.owner_id = (${latestRecipient}))
-  `).bind(userId, id, userId).first<{ photo_key: string }>();
+      AND (i.child_id IS NOT NULL OR i.owner_id = m.id OR i.owner_id = (${latestRecipient("m.id")}))
+  `).bind(userId, id).first<{ photo_key: string }>();
   const object = row ? await env.PHOTOS.get(row.photo_key) : null;
   const headers = {
     "Cache-Control": "private, no-store",

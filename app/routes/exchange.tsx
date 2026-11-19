@@ -4,23 +4,25 @@ import { workerContext } from "../context";
 import { MembershipChanged } from "../server/actor";
 import { ExchangeError, getExchange, mutateExchange } from "../server/exchange";
 import { GiftError, getDashboard, mutateGifts } from "../server/gifts";
-import { authCookies, authPost, formValues, readForm, requestOrigin, verifiedUser } from "../server/http";
+import { authCookies, authPost, formValues, readForm, requestOrigin, signedInUser } from "../server/http";
+import { mailAvailable } from "../server/mail";
 import { Dashboard } from "../ui";
+import { exchangePath } from "../types";
 
-export async function loader({ request, context }: Route.LoaderArgs) {
+export async function loader({ request, context, params }: Route.LoaderArgs) {
   const { env } = context.get(workerContext);
   const origin = requestOrigin(request, env);
-  const user = await verifiedUser(request, env);
-  if (!user) return redirect("/");
-  const exchange = await getExchange(env.DB, user.id);
-  if (!exchange) return redirect("/");
-  return getDashboard(env.DB, user.id, exchange, origin);
+  const user = await signedInUser(request, env);
+  if (!user) return redirect(`/?next=${encodeURIComponent(exchangePath(params.groupId))}`);
+  const exchange = await getExchange(env.DB, user.id, params.groupId);
+  if (!exchange) throw new Response("Exchange unavailable.", { status: 404 });
+  return getDashboard(env.DB, exchange, origin, mailAvailable(env));
 }
 
-export async function action({ request, context }: Route.ActionArgs) {
+export async function action({ request, context, params }: Route.ActionArgs) {
   const { env, executionContext } = context.get(workerContext);
   const origin = requestOrigin(request, env);
-  const user = await verifiedUser(request, env);
+  const user = await signedInUser(request, env);
   if (!user) return redirect("/", 303);
   let values: Record<string, string> = {};
   try {
@@ -32,7 +34,8 @@ export async function action({ request, context }: Route.ActionArgs) {
       return redirect("/", { status: 303, headers: authCookies(response) });
     }
     const memberId = values.actingMembershipId ?? "";
-    const message = await mutateGifts(env, user.id, form, memberId) ?? await mutateExchange(env.DB, user.id, form, origin, memberId);
+    const message = await mutateGifts(env, user.id, params.groupId, form, memberId)
+      ?? await mutateExchange(env.DB, user.id, params.groupId, form, origin, memberId, mailAvailable(env));
     if (values.intent === "delete-group") return redirect("/", 303);
     return { values: { intent: values.intent, ...(values.childId ? { childId: values.childId } : {}) }, message };
   } catch (error) {
@@ -49,6 +52,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 export default function ExchangePage({ loaderData, actionData }: Route.ComponentProps) {
   return (
     <Dashboard
+      key={loaderData.exchange.group.id}
       data={loaderData}
       values={actionData?.values ?? {}}
       message={actionData && "message" in actionData ? actionData.message : undefined}

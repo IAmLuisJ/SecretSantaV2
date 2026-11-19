@@ -8,6 +8,8 @@ import { getAuth, handleAuth } from "../app/server/auth.ts";
 const origin = "https://santa.example.test";
 const sendPath = "/api/auth/email-otp/send-verification-otp";
 const verifyPath = "/api/auth/sign-in/email-otp";
+const registerPath = "/api/auth/sign-up/email";
+const passwordPath = "/api/auth/sign-in/email";
 
 async function setup(t: TestContext) {
   const miniflare = new Miniflare({
@@ -167,13 +169,63 @@ test("expired codes cannot create an account or session", async (t) => {
   assert.equal(await env.DB.prepare("SELECT COUNT(*) AS count FROM user").first("count"), 0);
 });
 
-test("a delivery failure returns a generic unavailable response", async (t) => {
+test("a delivery failure with a configured provider returns a generic unavailable response", async (t) => {
   const { env } = await setup(t);
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    if (input !== "https://api.resend.com/emails") return fetchWithoutProvider(input, init);
+    return Response.json({ name: "validation_error" }, { status: 403 });
+  });
   const response = await handleAuth(new Request(origin + sendPath, {
     method: "POST",
     headers: { origin, "Content-Type": "application/json" },
     body: JSON.stringify({ email: "member@example.test", type: "sign-in" }),
-  }), { ...env, RESEND_API_KEY: undefined, LOCAL_MAIL: "log" });
+  }), env);
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { message: "Sign-in is temporarily unavailable." });
+});
+
+const fetchWithoutProvider = globalThis.fetch;
+
+for (const [label, overrides] of [
+  ["missing Resend key", { RESEND_API_KEY: undefined }],
+  ["disabled email sign-in", { EMAIL_SIGN_IN_ENABLED: "false" }],
+] as const) {
+  test(`password registration and sign-in work with ${label}`, async (t) => {
+    const { env, sent, post } = await setup(t);
+    Object.assign(env, overrides);
+    const email = "member@example.test";
+    const password = "unique test password";
+    assert.equal((await post(registerPath, { email, password })).status, 200);
+    const user = await env.DB.prepare('SELECT emailVerified FROM "user" WHERE email = ?').bind(email).first();
+    assert.equal(user?.emailVerified, 0);
+    const saved = await env.DB.prepare("SELECT password FROM account").first<string>("password");
+    assert.ok(saved);
+    assert.notEqual(saved, password);
+    assert.equal((await post(registerPath, { email, password: "another test password" })).status, 400);
+    assert.equal((await post(passwordPath, { email, password: "wrong password" })).status, 401);
+    const login = await post(passwordPath, { email: " MEMBER@EXAMPLE.TEST ", password });
+    assert.equal(login.status, 200);
+    const cookie = login.headers.getSetCookie().find((value) => value.includes("session_token="));
+    assert.ok(cookie);
+    const session = await getAuth(env, origin).api.getSession({ headers: new Headers({ cookie: cookie.split(";")[0] }) });
+    assert.equal(session?.user.email, email);
+    assert.equal((await post(sendPath, { email, type: "sign-in" })).status, 404);
+    assert.equal((await post(verifyPath, { email, otp: "123456" })).status, 404);
+    assert.equal(sent.length, 0);
+  });
+}
+
+test("enabling email codes does not let someone claim a password account through its unverified address", async (t) => {
+  const { env, post, sent } = await setup(t);
+  const email = "password@example.test";
+  const password = "unique test password";
+  const fallback = Object.assign(env, { EMAIL_SIGN_IN_ENABLED: "false" as string | undefined });
+  assert.equal((await post(registerPath, { email, password })).status, 200);
+  fallback.EMAIL_SIGN_IN_ENABLED = "true";
+  assert.equal((await post(registerPath, { email: "new@example.test", password })).status, 404);
+  assert.equal((await post(sendPath, { email, type: "sign-in" })).status, 200);
+  const otp = sent[0]?.text.match(/\b[0-9]{6}\b/)?.[0];
+  assert.ok(otp);
+  assert.equal((await post(verifyPath, { email, otp })).status, 400);
+  assert.equal((await post(passwordPath, { email, password })).status, 200);
 });

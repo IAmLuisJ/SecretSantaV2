@@ -3,11 +3,23 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { test, vi } from "vitest";
 import { Miniflare } from "miniflare";
-import { createGroup, getExchange, getInvite, joinGroup, mutateExchange } from "../app/server/exchange.ts";
+import { createGroup, getExchange as getGroupExchange, getInvite, joinGroup, listExchanges, mutateExchange as mutateGroupExchange } from "../app/server/exchange.ts";
 
 const origin = "https://santa.example.test";
 const users = ["alex", "blake", "casey", "devon", "erin", "outsider"];
 const user = (id: string) => ({ id, email: `${id}@example.test` });
+const migrations = ["0001_auth_mail.sql", "0002_exchange.sql", "0003_gifts.sql", "0004_codenames.sql", "0005_multiple_exchanges.sql"];
+
+async function getExchange(db: D1Database, userId: string) {
+  const [group] = await listExchanges(db, userId);
+  return group ? getGroupExchange(db, userId, group.id) : null;
+}
+
+async function mutateExchange(db: D1Database, userId: string, form: FormData, origin: string) {
+  const [group] = await listExchanges(db, userId);
+  assert.ok(group);
+  return mutateGroupExchange(db, userId, group.id, form, origin);
+}
 
 class Statement {
   readonly sql: string;
@@ -36,12 +48,21 @@ class Statement {
 class TestD1 {
   readonly sqlite = new DatabaseSync(":memory:");
   onBatch?: (statements: Statement[]) => Promise<void>;
-  constructor() {
-    for (const file of ["0001_auth_mail.sql", "0002_exchange.sql"]) {
-      this.sqlite.exec(readFileSync(new URL(`../migrations/${file}`, import.meta.url), "utf8"));
-    }
+  constructor(schema = migrations) {
+    for (const file of schema) this.migrate(file);
     const insert = this.sqlite.prepare('INSERT INTO "user"(id,name,email,emailVerified,createdAt,updatedAt) VALUES (?,?,?,1,0,0)');
     for (const id of users) insert.run(id, id, user(id).email);
+  }
+  migrate(file: string) {
+    const sql = readFileSync(new URL(`../migrations/${file}`, import.meta.url), "utf8");
+    this.sqlite.exec("BEGIN");
+    try {
+      this.sqlite.exec(sql);
+      this.sqlite.exec("COMMIT");
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
   }
   get db() { return this as unknown as D1Database; }
   prepare(sql: string) { return new Statement(sql, this.sqlite); }
@@ -129,9 +150,71 @@ test("verified group enrollment is atomic and shows only permitted group informa
     name: "Family", description: "Annual gifts", code: organizer.group.code,
   });
   assert.equal(fixture.count("email_outbox", "kind = 'welcome'"), 2);
-  await assert.rejects(createGroup(db, user("blake"), { name: "Second", description: "", year: 2026, displayName: "Blake" }));
   await assert.rejects(mutateExchange(db, "blake", form("delete-group", { confirm: "yes" }), origin), /organizer/i);
   assert.equal(fixture.count("groups"), 1);
+});
+
+test("the multiple-exchanges migration preserves existing draws, wishes, and membership data", () => {
+  const fixture = new TestD1(migrations.slice(0, -1));
+  const { sqlite } = fixture;
+  sqlite.exec(`
+    INSERT INTO groups VALUES ('group', 'Family', '', 'AAAAAAAAAAAAAAAA');
+    INSERT INTO memberships VALUES
+      ('alice-id', 'group', 'alex', 'alex@example.test', 'Alex', 'organizer'),
+      ('blake-id', 'group', 'blake', 'blake@example.test', 'Blake', 'member'),
+      ('casey-id', 'group', 'casey', 'casey@example.test', 'Casey', 'member');
+    INSERT INTO seasons (id, group_id, year, codename_mode) VALUES ('season', 'group', 2026, 1);
+    INSERT INTO season_participants (group_id, season_id, membership_id)
+      SELECT group_id, 'season', id FROM memberships;
+    INSERT INTO pair_exclusions VALUES ('group', 'alice-id', 'blake-id');
+    INSERT INTO draws VALUES ('draw', 'group', 'season', 1, 'request-key');
+    INSERT INTO assignments VALUES ('draw', 'season', 'alice-id', 'casey-id', 'Detective Eggnog');
+    UPDATE seasons SET active_draw_id = 'draw' WHERE id = 'season';
+    INSERT INTO invite_requests (id, membership_id) VALUES ('invite', 'alice-id');
+    INSERT INTO addresses VALUES ('alice-id', 'Alex', 'Example', '100 Test Lane', '', 'Detroit', 'MI', '48201');
+    INSERT INTO children VALUES ('child', 'group', 'Robin', 6);
+    INSERT INTO gift_items (id, group_id, owner_id, child_id, name, description, url, photo_key, created_at)
+    VALUES ('adult-wish', 'group', 'alice-id', NULL, 'Scarf', '', '', 'photos/scarf', 0),
+           ('child-wish', 'group', NULL, 'child', 'Train', '', '', 'photos/train', 0);
+  `);
+  const tables = ["memberships", "seasons", "season_participants", "draws", "assignments",
+    "pair_exclusions", "invite_requests", "addresses", "children", "gift_items", "photo_cleanup"];
+  const snapshot = () => tables.map(table => sqlite.prepare(`SELECT * FROM ${table}`).all().map(row => JSON.stringify(row)).sort());
+  const before = snapshot();
+  fixture.migrate(migrations.at(-1)!);
+  assert.deepEqual(snapshot(), before);
+  assert.deepEqual(sqlite.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.throws(() => sqlite.exec(`
+    INSERT INTO memberships VALUES ('duplicate', 'group', 'alex', 'alex@example.test', 'Alex', 'member')
+  `), /UNIQUE/);
+  sqlite.exec("DELETE FROM gift_items WHERE id = 'adult-wish'");
+  assert.equal(fixture.count("photo_cleanup", "photo_key = 'photos/scarf'"), 1);
+});
+
+test("the organizer can enable codenames before the draw and published aliases stay private and stable", async () => {
+  const { db } = await setup(3);
+  const current = await season(db);
+  const settings = (enabled: number, revision: number) => form("set-codename-mode", {
+    seasonId: current.id, revision, enabled,
+  });
+  await assert.rejects(mutateExchange(db, "blake", settings(1, current.revision), origin), /organizer/i);
+  const staleDraw = await submission(db);
+  await mutateExchange(db, "alex", settings(1, current.revision), origin);
+  assert.equal((await season(db)).codenameMode, true);
+  await assert.rejects(mutateExchange(db, "alex", staleDraw, origin), /changed/i);
+  await mutateExchange(db, "alex", await submission(db), origin);
+
+  const participants = users.slice(0, 3);
+  const states = await Promise.all(participants.map((id) => getExchange(db, id)));
+  const codenames = states.map((state) => state?.recipient?.name);
+  assert.equal(new Set(codenames).size, participants.length);
+  for (const name of codenames) {
+    assert.ok(name);
+    assert.ok(!participants.includes(name.toLowerCase()));
+  }
+  const published = await season(db);
+  await assert.rejects(mutateExchange(db, "alex", settings(0, published.revision), origin), /first draw/i);
+  assert.deepEqual(await Promise.all(participants.map(async (id) => (await getExchange(db, id))?.recipient?.name)), codenames);
 });
 
 test("four adults keep a private draw across a skipped year with bidirectional exclusions and directed repeat prevention", async () => {
@@ -287,19 +370,19 @@ test("concurrent draws only publish once and retried request keys do not duplica
   assert.equal(fixture.count("email_outbox", "kind = 'draw'"), 3);
 });
 
-test("group deletion cancels pending mail and frees the verified account for another group", async () => {
+test("group deletion cancels its pending mail and leaves other memberships intact", async () => {
   const fixture = await setup(2);
   const { db } = fixture;
   await mutateExchange(db, "alex", await submission(db), origin);
   await mutateExchange(db, "blake", form("invite", { email: "another@example.test" }), origin);
   const oldGroup = (await getExchange(db, "alex"))!.group.id;
-  await mutateExchange(db, "alex", form("delete-group", { groupId: oldGroup, confirm: "yes" }), origin);
-  assert.equal(await getExchange(db, "blake"), null);
+  const second = await createGroup(db, user("blake"), { name: "Second", description: "", year: 2027, displayName: "Blake" });
+  await mutateGroupExchange(db, "alex", oldGroup, form("delete-group", { groupId: oldGroup, confirm: "yes" }), origin);
+  assert.equal(await getGroupExchange(db, "blake", oldGroup), null);
   assert.equal(fixture.count("assignments"), 0);
-  assert.equal(fixture.count("email_outbox", "status = 'pending'"), 0);
+  assert.equal(fixture.count("email_outbox", "status = 'pending'"), 1);
   assert.equal(fixture.count("email_outbox", "status = 'cancelled'"), 5);
-  await createGroup(db, user("blake"), { name: "Second", description: "", year: 2027, displayName: "Blake" });
-  assert.equal((await getExchange(db, "blake"))?.group.name, "Second");
+  assert.equal((await getGroupExchange(db, "blake", second))?.self.role, "organizer");
   await createGroup(db, user("alex"), { name: "New group", description: "", year: 2027, displayName: "Alex" });
   await assert.rejects(mutateExchange(db, "alex", form("delete-group", { groupId: oldGroup, confirm: "yes" }), origin), /group has changed/i);
   assert.equal((await getExchange(db, "alex"))?.group.name, "New group");
@@ -328,7 +411,7 @@ test("local D1 rolls back stale publication after a roster edit races its input 
   });
   t.onTestFinished(() => runtime.dispose());
   const db = await runtime.getD1Database("DB");
-  for (const file of ["0001_auth_mail.sql", "0002_exchange.sql"]) {
+  for (const file of migrations) {
     const sql = readFileSync(new URL(`../migrations/${file}`, import.meta.url), "utf8");
     const statements = sql.split(/;\n(?!END;)/).filter((statement) => statement.trim());
     await db.batch(statements.map((statement) => db.prepare(statement)));

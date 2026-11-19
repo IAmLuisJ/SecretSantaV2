@@ -1,9 +1,74 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { Miniflare } from "miniflare";
 import { test, vi, type TestContext } from "vitest";
 import type { Env } from "../app/env.ts";
 import { processOutbox } from "../app/server/mail.ts";
+
+test("the Worker reaches Resend without following redirects", async (t) => {
+  const source = await readFile(new URL("../app/server/mail.ts", import.meta.url), "utf8");
+  const miniflare = new Miniflare({
+    workers: [{
+      config: {
+        name: "mail",
+        compatibilityDate: "2026-11-01",
+        compatibilityFlags: ["nodejs_compat"],
+        manifest: {
+          mainModule: "index.js",
+          modules: {
+            "mail.js": { type: "esm", contents: stripTypeScriptTypes(source) },
+            "index.js": { type: "esm", contents: `
+              import { sendDirect } from "./mail.js";
+              export default { async fetch(request) {
+                try {
+                  const id = await sendDirect({
+                    RESEND_API_KEY: "test-mail-key",
+                    MAIL_FROM: "santa@example.test",
+                  }, {
+                    to: "member@example.test",
+                    subject: new URL(request.url).pathname,
+                    text: "Test sign-in code",
+                  });
+                  return Response.json({ id });
+                } catch (error) {
+                  return Response.json({ reason: error.reason }, { status: 502 });
+                }
+              } };
+            ` },
+          },
+        },
+      },
+      dev: { outboundService: { type: "worker", worker: "resend-stub" } },
+    }, {
+      config: {
+        name: "resend-stub",
+        compatibilityDate: "2026-11-01",
+        manifest: {
+          mainModule: "index.js",
+          modules: { "index.js": { type: "esm", contents: `
+            export default { async fetch(request) {
+              if (request.url !== "https://api.resend.com/emails" || request.method !== "POST"
+                || request.headers.get("Authorization") !== "Bearer test-mail-key") {
+                return new Response(null, { status: 400 });
+              }
+              if ((await request.json()).subject === "/redirect") {
+                return Response.redirect("https://other.example.test/", 307);
+              }
+              return Response.json({ id: "message-1" });
+            } };
+          ` } },
+        },
+      },
+    }],
+  });
+  t.onTestFinished(() => miniflare.dispose());
+
+  const sent = await miniflare.dispatchFetch("http://localhost/send");
+  assert.deepEqual(await sent.json(), { id: "message-1" });
+  const redirected = await miniflare.dispatchFetch("http://localhost/redirect");
+  assert.deepEqual(await redirected.json(), { reason: "provider_http_307" });
+});
 
 async function setup(t: TestContext) {
   const miniflare = new Miniflare({

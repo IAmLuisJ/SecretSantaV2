@@ -11,10 +11,10 @@ export function requestOrigin(request: Request, env: Env): string {
   return origin;
 }
 
-export async function verifiedUser(request: Request, env: Env): Promise<User | null> {
+export async function signedInUser(request: Request, env: Env): Promise<User | null> {
   if (!request.headers.get("Cookie")) return null;
   const session = await getAuth(env, requestOrigin(request, env)).api.getSession({ headers: request.headers });
-  return session?.user.emailVerified ? { id: session.user.id, email: session.user.email } : null;
+  return session ? { id: session.user.id, email: session.user.email } : null;
 }
 
 const maxFormBytes = MAX_PHOTO_BYTES + 64 * 1024;
@@ -53,7 +53,7 @@ export async function readForm(request: Request, origin: string): Promise<FormDa
 export function formValues(form: FormData): Values {
   const values: [string, string][] = [];
   for (const [key, value] of form) {
-    if (typeof value === "string" && key !== "code" && value.length <= 2048) values.push([key, value]);
+    if (typeof value === "string" && key !== "code" && key !== "password" && value.length <= 2048) values.push([key, value]);
   }
   return Object.fromEntries(values);
 }
