@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { GiftError, inspectPhoto, productUrl } from "../app/server/gifts.ts";
 
 test("product links accept a pasted HTTP URL or a bare domain", () => {

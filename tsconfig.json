@@ -1,5 +1,5 @@
 {
-  "include": ["app", "workers", "cloudflare.config.ts", "vite.config.ts", "react-router.config.ts", ".react-router/types", "scripts", "tests", "playwright.config.ts"],
+  "include": ["app", "workers", "cloudflare.config.ts", "vite.config.ts", "react-router.config.ts", ".react-router/types", "scripts", "tests", "playwright.config.ts", "vitest.config.ts"],
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["DOM", "DOM.Iterable", "ES2023"],

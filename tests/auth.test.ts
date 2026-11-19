@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { test, type TestContext } from "node:test";
 import { Miniflare } from "miniflare";
+import { test, vi, type TestContext } from "vitest";
 import type { Env } from "../app/env.ts";
 import { getAuth, handleAuth } from "../app/server/auth.ts";
 
@@ -21,7 +21,7 @@ async function setup(t: TestContext) {
       },
     } }],
   });
-  t.after(() => miniflare.dispose());
+  t.onTestFinished(() => miniflare.dispose());
   const DB = await miniflare.getD1Database("DB");
   const sql = await readFile(new URL("../migrations/0001_auth_mail.sql", import.meta.url), "utf8");
   await DB.batch(sql.split(";").filter((statement) => statement.trim()).map((statement) => DB.prepare(statement)));
@@ -35,7 +35,7 @@ async function setup(t: TestContext) {
 
   const sent: Array<{ to: string[]; text: string }> = [];
   const realFetch = globalThis.fetch;
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     if (input !== "https://api.resend.com/emails") return realFetch(input, init);
     sent.push(JSON.parse(String(init?.body)));
     return Response.json({ id: crypto.randomUUID() });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import test from "node:test";
+import { test, vi } from "vitest";
 import { Miniflare } from "miniflare";
 import { createGroup, getExchange, getInvite, joinGroup, mutateExchange } from "../app/server/exchange.ts";
 
@@ -195,11 +195,11 @@ test("a two-adult second season can be discarded and reused without losing compl
   await assert.rejects(mutateExchange(db, "alex", await submission(db), origin), /no complete draw/i);
 });
 
-test("only the final draw of the latest completed season prevents repeats", async (t) => {
+test("only the final draw of the latest completed season prevents repeats", async () => {
   const fixture = await setup(3);
   const { db } = fixture;
   let order = 0.999;
-  t.mock.method(Math, "random", () => order);
+  vi.spyOn(Math, "random").mockImplementation(() => order);
   await mutateExchange(db, "alex", await submission(db), origin);
   const original = (await getExchange(db, "alex"))?.recipient?.id;
   assert.ok(original);
@@ -326,7 +326,7 @@ test("local D1 rolls back stale publication after a roster edit races its input 
       },
     } }],
   });
-  t.after(() => runtime.dispose());
+  t.onTestFinished(() => runtime.dispose());
   const db = await runtime.getD1Database("DB");
   for (const file of ["0001_auth_mail.sql", "0002_exchange.sql"]) {
     const sql = readFileSync(new URL(`../migrations/${file}`, import.meta.url), "utf8");

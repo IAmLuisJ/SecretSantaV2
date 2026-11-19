@@ -27,6 +27,21 @@ npm run test:e2e
 
 The automated checks use loopback networking and local Cloudflare emulators. The browser suite creates its own disposable database and uses synthetic email addresses. Its local mail log lives under the ignored `.cloudflare/` directory. The build command exercises the production bundler with local bindings.
 
+## GitHub Actions
+
+[CI/CD](.github/workflows/ci-cd.yml) runs Vitest, TypeScript checks, and Playwright on pull requests. Playwright exercises email sign-in on mobile Chromium and WebKit and also runs the password suite on branches that include it. Failed browser tests attach a report with traces to the workflow run.
+
+Merging to `main` triggers a push run that checks the merged commit again. Once the checks pass, it builds the production Worker, applies pending D1 migrations, and deploys to Cloudflare. Direct pushes to `main` also trigger this workflow. Use a GitHub branch ruleset requiring pull requests and the **Vitest**, **Playwright (email)**, and **Playwright (password)** checks to enforce the merge path.
+
+Create a GitHub Actions environment named `production` and limit deployments to `main`. Add these settings to the environment using your production Cloudflare resources and verified Resend sender.
+
+| GitHub setting | Names |
+| --- | --- |
+| Environment variables | `CLOUDFLARE_ACCOUNT_ID`, `SANTA_APP_ORIGIN`, `SANTA_D1_ID`, `SANTA_R2_BUCKET`, `SANTA_MAIL_FROM` |
+| Environment secrets | `CLOUDFLARE_API_TOKEN`, `BETTER_AUTH_SECRET`, `RESEND_API_KEY` |
+
+Scope the [Cloudflare API token](https://developers.cloudflare.com/cf/ci/#provide-credentials) to the production account and domain, with permissions to deploy the Worker and its custom domain and apply D1 migrations. The origin must be HTTPS with no trailing slash. Reuse the existing production auth secret if the Worker is already live.
+
 ## Staging and production
 
 Use separate Cloudflare D1 databases, private R2 buckets, HTTPS Worker custom domains, and auth secrets. Verify the Resend sender domain before using the real delivery path. Store the following configuration in the release environment.

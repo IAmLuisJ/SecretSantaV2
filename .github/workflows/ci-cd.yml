@@ -1,0 +1,134 @@
+name: CI/CD
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22.22.1"
+  CF_SEND_TELEMETRY: "false"
+
+jobs:
+  vitest:
+    name: Vitest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  playwright:
+    name: Playwright (${{ matrix.sign-in }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sign-in: email
+            email-enabled: "true"
+          - sign-in: password
+            email-enabled: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Run browser tests
+        if: matrix.sign-in == 'email' || hashFiles('tests/e2e/password.spec.ts') != ''
+        id: browser-tests
+        env:
+          SANTA_EMAIL_SIGN_IN_ENABLED: ${{ matrix.email-enabled }}
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium webkit
+          npm run test:e2e -- --reporter=line,html --trace=retain-on-failure
+      - name: Upload failure report
+        if: failure() && steps.browser-tests.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-${{ matrix.sign-in }}-report
+          path: playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  deploy:
+    name: Deploy to Cloudflare
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [vitest, playwright]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: ${{ vars.SANTA_APP_ORIGIN }}
+    concurrency:
+      group: cloudflare-production
+      cancel-in-progress: false
+    env:
+      SANTA_D1_ID: ${{ vars.SANTA_D1_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - run: npm ci
+      - name: Build and validate the production Worker
+        env:
+          SANTA_APP_ORIGIN: ${{ vars.SANTA_APP_ORIGIN }}
+          SANTA_R2_BUCKET: ${{ vars.SANTA_R2_BUCKET }}
+          SANTA_MAIL_FROM: ${{ vars.SANTA_MAIL_FROM }}
+        run: |
+          : "${SANTA_MAIL_FROM:?Set the production SANTA_MAIL_FROM variable}"
+          npx vite build --mode production
+          npx cf deploy --prebuilt --mode production --dry-run
+      - name: Check the current main revision
+        id: revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [[ "$main_sha" == "$GITHUB_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping deployment because main has advanced."
+          fi
+      - name: Apply D1 migrations and deploy
+        if: steps.revision.outputs.current == 'true'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+        run: |
+          : "${CLOUDFLARE_ACCOUNT_ID:?Set the production CLOUDFLARE_ACCOUNT_ID variable}"
+          : "${CLOUDFLARE_API_TOKEN:?Set the production CLOUDFLARE_API_TOKEN secret}"
+          : "${BETTER_AUTH_SECRET:?Set the production BETTER_AUTH_SECRET secret}"
+          : "${RESEND_API_KEY:?Set the production RESEND_API_KEY secret}"
+          secrets_dir=$(mktemp -d "$RUNNER_TEMP/worker-secrets.XXXXXX")
+          secrets_file="$secrets_dir/secrets.json"
+          trap 'rm -f "$secrets_file"; rmdir "$secrets_dir"' EXIT
+          node --input-type=module -e '
+            import { writeFileSync } from "node:fs";
+            const { BETTER_AUTH_SECRET, RESEND_API_KEY } = process.env;
+            writeFileSync(process.argv[1], JSON.stringify({ BETTER_AUTH_SECRET, RESEND_API_KEY }));
+          ' "$secrets_file"
+          npx cf d1 migrations apply "$SANTA_D1_ID" --dir migrations
+          npx cf deploy --prebuilt --mode production --secrets-file "$secrets_file"
