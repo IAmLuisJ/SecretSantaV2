@@ -625,6 +625,32 @@ details > p {
   margin-top: .65rem;
 }
 
+.santa-guess .form-stack, .santa-results {
+  margin-top: .85rem;
+}
+
+.santa-guess .form-stack {
+  max-width: 28rem;
+}
+
+.santa-results {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  text-align: left;
+}
+
+.santa-results th, .santa-results td {
+  padding: .5rem .45rem .5rem 0;
+  border-bottom: 1px solid var(--rule);
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.santa-results th, .santa-results strong {
+  color: var(--evergreen);
+}
+
 .section-icon {
   display: grid;
   width: 2.4rem;
@@ -962,6 +988,10 @@ address {
 
 .organizer-box > .form-stack, .roster, .exclusions {
   margin-top: .6rem;
+}
+
+.santa-guess-controls {
+  margin-top: 1rem;
 }
 
 .draw-release-note {

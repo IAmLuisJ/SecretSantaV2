@@ -8,6 +8,12 @@ export function exchangePath(groupId: string) {
   return `/exchange/${encodeURIComponent(groupId)}`;
 }
 
+export type SantaPairing = { giverName: string; recipientName: string; guessCorrect: boolean | null };
+export type SantaGuess =
+  | { status: "open"; candidates: { id: string; name: string }[] }
+  | { status: "locked"; name: string }
+  | { status: "revealed"; pairings: SantaPairing[] };
+
 export type Exchange = {
   group: Invite & { id: string };
   self: { id: string; name: string; codename: string | null; role: "organizer" | "member" };
@@ -21,10 +27,13 @@ export type Exchange = {
     drawRevision: number | null;
     drawReleaseAt: number | null;
     codenameMode: boolean;
+    santaGuessEnabled: boolean;
+    santaGuessRevealed: boolean;
   } | null;
   readAt: number;
   exclusions: { firstId: string; secondId: string }[];
   recipient: { name: string } | null;
+  santaGuess: SantaGuess | null;
   waitingCount: number;
   mailFailures: number;
 };

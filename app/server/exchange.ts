@@ -1,7 +1,7 @@
 import { findDraw, type Assignment, type Exclusion } from "./matching.ts";
 import { MembershipChanged } from "./actor.ts";
 import { drawCodenames } from "./codenames.ts";
-import { exchangePath, type ExchangeSummary } from "../types.ts";
+import { exchangePath, type ExchangeSummary, type SantaGuess, type SantaPairing } from "../types.ts";
 
 type SignedInUser = { id: string; email: string };
 type Role = "organizer" | "member";
@@ -13,7 +13,11 @@ type MemberRow = { id: string; name: string; email: string; eligible: number };
 const codeAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const seasonChanged = "The exchange changed. Refresh the page and try again.";
 
-export class ExchangeError extends Error {}
+export class ExchangeError extends Error {
+  constructor(message: string, readonly status: 400 | 409 = 400) {
+    super(message);
+  }
+}
 
 function validYear(value: unknown) {
   const year = typeof value === "string" && /^\d{4}$/.test(value) ? Number(value) : value;
@@ -153,6 +157,26 @@ export async function getExchange(db: D1Database, userId: string, groupId: strin
       d.release_at AS drawReleaseAt, unixepoch() AS readAt,
       s.codename_mode AS codenameMode, own_alias.codename AS selfCodename, a.recipient_id AS recipientId,
       CASE WHEN s.codename_mode = 1 THEN a.codename ELSE recipient.name END AS recipientName,
+      s.santa_guess_enabled AS santaGuessEnabled, s.santa_guess_revealed AS santaGuessRevealed,
+      guessed_giver.name AS ownSantaGuess,
+      CASE WHEN s.santa_guess_enabled = 1 AND s.santa_guess_revealed = 0
+        AND a.draw_id IS NOT NULL AND own_guess.guesser_id IS NULL THEN (
+        SELECT json_group_array(json_object('id', candidate.giver_id, 'name', m.name))
+        FROM assignments candidate JOIN memberships m ON m.id = candidate.giver_id
+        WHERE candidate.draw_id = a.draw_id AND candidate.giver_id <> self.id
+      ) END AS santaCandidates,
+      CASE WHEN s.santa_guess_revealed = 1 AND (self.role = 'organizer' OR a.draw_id IS NOT NULL) THEN (
+        SELECT json_group_array(json_object(
+          'giverName', giver.name,
+          'recipientName', receiver.name,
+          'guessCorrect', guess.guessed_giver_id = pairing.giver_id
+        ))
+        FROM assignments pairing
+        JOIN memberships giver ON giver.id = pairing.giver_id
+        JOIN memberships receiver ON receiver.id = pairing.recipient_id
+        LEFT JOIN santa_guesses guess ON guess.draw_id = pairing.draw_id AND guess.guesser_id = pairing.recipient_id
+        WHERE pairing.draw_id = released.id
+      ) END AS santaResults,
       CASE WHEN self.role = 'organizer' THEN (
         SELECT json_group_array(json_object(
           'id', m.id, 'name', m.name, 'email', m.email, 'eligible', coalesce(p.eligible, 0)
@@ -183,6 +207,9 @@ export async function getExchange(db: D1Database, userId: string, groupId: strin
     LEFT JOIN assignments a ON a.draw_id = released.id AND a.giver_id = self.id
     LEFT JOIN assignments own_alias ON own_alias.draw_id = released.id AND own_alias.recipient_id = self.id AND s.codename_mode = 1
     LEFT JOIN memberships recipient ON recipient.id = a.recipient_id
+    LEFT JOIN santa_guesses own_guess ON own_guess.draw_id = a.draw_id AND own_guess.guesser_id = self.id
+      AND s.santa_guess_revealed = 0
+    LEFT JOIN memberships guessed_giver ON guessed_giver.id = own_guess.guessed_giver_id
     WHERE self.user_id = ? AND self.group_id = ?
   `).bind(userId, groupId).first<{
     groupId: string; name: string; description: string; code: string;
@@ -190,9 +217,29 @@ export async function getExchange(db: D1Database, userId: string, groupId: strin
     seasonId: string | null; year: number; completed: number; revision: number; drawId: string | null; drawRevision: number | null;
     drawReleaseAt: number | null; readAt: number;
     codenameMode: number | null; recipientId: string | null; recipientName: string | null;
+    santaGuessEnabled: number | null; santaGuessRevealed: number | null;
+    ownSantaGuess: string | null; santaCandidates: string | null; santaResults: string | null;
     members: string; exclusions: string; waitingCount: number; mailFailures: number;
   }>();
   if (!row) return null;
+  let santaGuess: SantaGuess | null = null;
+  if (row.santaResults !== null) {
+    const pairings = JSON.parse(row.santaResults) as (Omit<SantaPairing, "guessCorrect"> & { guessCorrect: number | null })[];
+    santaGuess = {
+      status: "revealed",
+      pairings: pairings
+        .map(pairing => ({ ...pairing, guessCorrect: pairing.guessCorrect === null ? null : Boolean(pairing.guessCorrect) }))
+        .sort((first, second) => first.recipientName.localeCompare(second.recipientName) || first.giverName.localeCompare(second.giverName)),
+    };
+  } else if (row.ownSantaGuess !== null) {
+    santaGuess = { status: "locked", name: row.ownSantaGuess };
+  } else if (row.santaCandidates !== null) {
+    const candidates = JSON.parse(row.santaCandidates) as { id: string; name: string }[];
+    santaGuess = {
+      status: "open",
+      candidates: candidates.sort((first, second) => first.name.localeCompare(second.name) || first.id.localeCompare(second.id)),
+    };
+  }
   return {
     group: { id: row.groupId, name: row.name, description: row.description, code: row.code },
     self: { id: row.selfId, name: row.selfName, codename: row.selfCodename, role: row.role },
@@ -200,6 +247,7 @@ export async function getExchange(db: D1Database, userId: string, groupId: strin
       id: row.seasonId, year: row.year, completed: Boolean(row.completed),
       revision: row.revision, drawId: row.drawId, drawRevision: row.drawRevision,
       drawReleaseAt: row.drawReleaseAt, codenameMode: Boolean(row.codenameMode),
+      santaGuessEnabled: Boolean(row.santaGuessEnabled), santaGuessRevealed: Boolean(row.santaGuessRevealed),
     } : null,
     readAt: row.readAt,
     members: (JSON.parse(row.members) as MemberRow[])
@@ -207,6 +255,7 @@ export async function getExchange(db: D1Database, userId: string, groupId: strin
       .sort((first, second) => first.name.localeCompare(second.name)),
     exclusions: JSON.parse(row.exclusions) as Exclusion[],
     recipient: row.recipientId && row.recipientName !== null ? { id: row.recipientId, name: row.recipientName } : null,
+    santaGuess,
     waitingCount: row.waitingCount,
     mailFailures: row.mailFailures,
   };
@@ -338,7 +387,8 @@ async function publishDraw(db: D1Database, group: Membership, form: FormData, or
 
   const [seasons, participants, exclusions, history, existing] = await db.batch([
     db.prepare(`
-      SELECT id, year, completed, revision, active_draw_id AS drawId, codename_mode AS codenameMode, unixepoch() AS now
+      SELECT id, year, completed, revision, active_draw_id AS drawId, codename_mode AS codenameMode, unixepoch() AS now,
+        santa_guess_revealed = 1 OR EXISTS (SELECT 1 FROM santa_guesses WHERE draw_id = seasons.active_draw_id) AS santaGuessLocked
       FROM seasons WHERE group_id = ? AND id = ?
     `).bind(groupId, reference.id),
     db.prepare("SELECT membership_id AS id FROM season_participants WHERE group_id = ? AND season_id = ? AND eligible = 1")
@@ -354,10 +404,11 @@ async function publishDraw(db: D1Database, group: Membership, form: FormData, or
   ]);
   if (existing.results.length) return "This draw was already published.";
 
-  const current = seasons.results[0] as (SeasonHead & { codenameMode: number; now: number }) | undefined;
+  const current = seasons.results[0] as (SeasonHead & { codenameMode: number; now: number; santaGuessLocked: number }) | undefined;
   if (!current || current.completed || current.revision !== reference.revision || current.drawId !== reference.drawId) {
     throw new ExchangeError(seasonChanged);
   }
+  if (current.santaGuessLocked) throw new ExchangeError("Guess Your Santa has locked this draw.");
   if (current.drawId) requireConfirmation(form, "Confirm the redraw. Everyone may get a different recipient.");
   const releaseAt = drawReleaseTime(form, current.now);
 
@@ -373,6 +424,9 @@ async function publishDraw(db: D1Database, group: Membership, form: FormData, or
       INSERT INTO draws(id, group_id, season_id, revision, request_key, release_at)
       SELECT ?, group_id, id, revision, ?, ? FROM seasons
       WHERE id = ? AND group_id = ? AND completed = 0 AND revision = ? AND active_draw_id IS ?
+        AND santa_guess_revealed = 0 AND NOT EXISTS (
+          SELECT 1 FROM santa_guesses WHERE draw_id = seasons.active_draw_id
+        )
       ON CONFLICT(season_id, request_key) DO NOTHING
     `).bind(id, requestKey, releaseAt, reference.id, groupId, reference.revision, reference.drawId),
     db.prepare(`
@@ -418,6 +472,60 @@ async function setCodenameMode(db: D1Database, groupId: string, form: FormData) 
     throw new ExchangeError("You can only change codename mode before the first draw. Refresh the page and try again.");
   }
   return enabled === "1" ? "Codename mode is on." : "Codename mode is off.";
+}
+
+async function setSantaGuess(db: D1Database, groupId: string, form: FormData) {
+  const { id, revision, drawId } = seasonReference(form);
+  const enabled = field(form, "enabled");
+  if (enabled !== "0" && enabled !== "1") throw new ExchangeError("Choose whether to enable Guess Your Santa.");
+  if (enabled === "1") requireConfirmation(form, "Confirm that the reveal shares real names even when the draw uses codenames.");
+
+  const result = await db.prepare(`
+    UPDATE seasons SET santa_guess_enabled = ?
+    WHERE id = ? AND group_id = ? AND revision = ? AND active_draw_id IS ?
+      AND completed = 0 AND santa_guess_revealed = 0 AND (active_draw_id IS NULL OR ? = 1)
+  `).bind(Number(enabled), id, groupId, revision, drawId, Number(enabled)).run();
+  if (!result.meta.changes) throw new ExchangeError(seasonChanged, 409);
+  return enabled === "1" ? "Guess Your Santa is on for this exchange." : "Guess Your Santa is off for this exchange.";
+}
+
+async function lockSantaGuess(db: D1Database, group: Membership, form: FormData) {
+  requireConfirmation(form, "Confirm that you’ve opened your gift and are ready to lock your guess.");
+  const { id, drawId } = seasonReference(form);
+  const guessedGiverId = field(form, "guessedGiverId");
+  if (!guessedGiverId || guessedGiverId === group.membershipId) {
+    throw new ExchangeError("Choose another adult from the current draw.");
+  }
+  const result = await db.prepare(`
+    INSERT INTO santa_guesses(draw_id, guesser_id, guessed_giver_id)
+    SELECT d.id, incoming.recipient_id, candidate.giver_id
+    FROM seasons s
+    JOIN released_draws d ON d.id = s.active_draw_id
+    JOIN assignments incoming ON incoming.draw_id = d.id AND incoming.recipient_id = ?
+    JOIN assignments candidate ON candidate.draw_id = d.id AND candidate.giver_id = ?
+      AND candidate.giver_id <> incoming.recipient_id
+    WHERE s.id = ? AND s.group_id = ? AND d.id = ? AND s.santa_guess_enabled = 1 AND s.santa_guess_revealed = 0
+      AND s.id = (SELECT id FROM seasons WHERE group_id = s.group_id ORDER BY year DESC LIMIT 1)
+    ON CONFLICT(draw_id, guesser_id) DO NOTHING
+  `).bind(group.membershipId, guessedGiverId, id, group.groupId, drawId).run();
+  if (!result.meta.changes) {
+    throw new ExchangeError("This guess couldn’t be locked. Check the current draw and choose a listed adult if guessing is still open.", 409);
+  }
+  return "Your guess is locked.";
+}
+
+async function revealSantaGuesses(db: D1Database, groupId: string, form: FormData) {
+  requireConfirmation(form, "Confirm that you want to share real names and close guessing.");
+  const { id, revision, drawId } = seasonReference(form);
+  const result = await db.prepare(`
+    UPDATE seasons AS s SET santa_guess_revealed = 1
+    WHERE s.id = ? AND s.group_id = ? AND s.revision = ? AND s.active_draw_id = ?
+      AND s.santa_guess_enabled = 1 AND s.santa_guess_revealed = 0
+      AND EXISTS (SELECT 1 FROM released_draws WHERE id = s.active_draw_id)
+      AND s.id = (SELECT id FROM seasons WHERE group_id = s.group_id ORDER BY year DESC LIMIT 1)
+  `).bind(id, groupId, revision, drawId).run();
+  if (!result.meta.changes) throw new ExchangeError("The Santa reveal is unavailable for this draw. Check the current exchange.", 409);
+  return "The Santa reveal is live.";
 }
 
 async function finishSeason(db: D1Database, groupId: string, form: FormData, complete: boolean) {
@@ -475,6 +583,7 @@ export async function mutateExchange(db: D1Database, userId: string, groupId: st
   if (expectedMemberId !== undefined && group?.membershipId !== expectedMemberId) throw new MembershipChanged();
   if (!group) throw new ExchangeError("Join a group before managing an exchange.");
   const intent = field(form, "intent");
+  if (intent === "lock-santa-guess") return lockSantaGuess(db, group, form);
   if (intent === "invite") {
     if (!mailEnabled) throw new ExchangeError("Email invitations are unavailable. Share the invitation link instead.");
     return emailInvite(db, group, form, origin);
@@ -484,6 +593,8 @@ export async function mutateExchange(db: D1Database, userId: string, groupId: st
   switch (intent) {
     case "start-season": return startSeason(db, group.groupId, validYear(field(form, "year")));
     case "set-codename-mode": return setCodenameMode(db, group.groupId, form);
+    case "set-santa-guess": return setSantaGuess(db, group.groupId, form);
+    case "reveal-santa-guesses": return revealSantaGuesses(db, group.groupId, form);
     case "set-roster": return setRoster(db, group.groupId, form);
     case "add-exclusion": return changeExclusion(db, group.groupId, form, true);
     case "remove-exclusion": return changeExclusion(db, group.groupId, form, false);
