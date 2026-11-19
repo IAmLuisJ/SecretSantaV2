@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Form, Link, useLocation, useNavigation, type FormProps } from "react-router";
 import { DrawPartyCountdown, useDrawStatusRefresh } from "./draw-party";
+import { elfMailIntents, elfMailPrompts, maxElfMailLength, type ElfMail, type ElfMailMessage } from "./elf-mail";
 import { ChristmasTree, HolidayStar, WrappedGift } from "./holiday-art";
 import { maxPasswordLength, minPasswordLength } from "./password";
 import { exchangePath, type Address, type DashboardData, type EntryStep, type ExchangeSummary, type GiftItem, type Invite, type User, type Values } from "./types";
@@ -21,7 +22,7 @@ type EntryProps = {
 };
 
 type DashboardProps = {
-  data: DashboardData;
+  data: DashboardData & { elfMail: ElfMail };
   message?: string;
   error?: string;
   values: Values;
@@ -512,8 +513,110 @@ function Invitations({ group, inviteUrl, mailEnabled, values, resetValues }: {
   );
 }
 
-function Recipient({ data, pendingReleaseAt }: { data: DashboardData; pendingReleaseAt: number | null }) {
+type ElfMailProps = {
+  messages: ElfMailMessage[];
+  season: Season;
+  requestId: string;
+  values: Values;
+  resetValues?: Values;
+};
+
+function ElfMailMessages({ messages, viewer, partner }: {
+  messages: ElfMailMessage[];
+  viewer: ElfMailMessage["sender"];
+  partner: string;
+}) {
+  if (messages.length === 0) return null;
+  return (
+    <ol className="elf-mail-messages" aria-label="Messages" role="list">
+      {messages.map(({ sender, body }, index) => (
+        <li key={index} className={sender === viewer ? "elf-mail-sent" : undefined}>
+          <p className="section-note">{sender === viewer ? "You" : partner}</p>
+          <p className="multiline">{body}</p>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function ElfMailFields({ season, requestId }: Pick<ElfMailProps, "season" | "requestId">) {
+  return (
+    <>
+      <input type="hidden" name="seasonId" value={season.id} />
+      <input type="hidden" name="drawId" value={season.drawId ?? ""} />
+      <input type="hidden" name="requestId" value={requestId} />
+    </>
+  );
+}
+
+function ElfMailComposer({ matchName, messages, season, requestId, values, resetValues }: ElfMailProps & { matchName: string }) {
+  const { prompt, question } = elfMailIntents;
+  const promptFields = fieldsFor(values, prompt);
+  const questionFields = fieldsFor(values, question);
+  const promptReset = fieldsFor(resetValues, prompt);
+  const questionReset = fieldsFor(resetValues, question);
+  return (
+    <section className="elf-mail-composer" aria-labelledby="elf-mail-compose-heading">
+      <h4 id="elf-mail-compose-heading">Elf Mail</h4>
+      <ElfMailMessages messages={messages} viewer="giver" partner={matchName} />
+      <details open={Boolean(promptFields || questionFields || promptReset || questionReset) || undefined}>
+        <summary>Ask a question</summary>
+        <p>Your match will see “Your Secret Santa” as the sender. Keep names and other clues out of your message.</p>
+        <ActionForm intent={prompt} className="form-stack" resetOn={promptReset}>
+          <ElfMailFields season={season} requestId={`${requestId}-prompt`} />
+          <fieldset className="elf-mail-prompts">
+            <legend>Choose a playful prompt</legend>
+            {elfMailPrompts.map(({ id, text }) => (
+              <label className="check-line" key={id}>
+                <input type="radio" name="prompt" value={id} defaultChecked={promptFields?.prompt === id} required />
+                <span>{text}</span>
+              </label>
+            ))}
+          </fieldset>
+          <Submit intent={prompt} appearance="button-secondary">Send prompt</Submit>
+        </ActionForm>
+        <ActionForm intent={question} className="form-stack" resetOn={questionReset}>
+          <ElfMailFields season={season} requestId={requestId} />
+          <label>Your question
+            <textarea name="body" defaultValue={questionFields?.body} rows={3} maxLength={maxElfMailLength} required />
+          </label>
+          <Submit intent={question} appearance="button-secondary">Send question</Submit>
+        </ActionForm>
+      </details>
+    </section>
+  );
+}
+
+function ElfMailInbox({ messages, season, requestId, values, resetValues }: ElfMailProps) {
+  const { reply } = elfMailIntents;
+  return (
+    <section className="dashboard-section elf-mail-inbox" id="elf-mail" aria-labelledby="elf-mail-inbox-heading">
+      <h2 id="elf-mail-inbox-heading">Elf Mail inbox</h2>
+      {messages.length === 0 ? <p>Questions from your Secret Santa will appear here.</p> : (
+        <>
+          <ElfMailMessages messages={messages} viewer="recipient" partner="Your Secret Santa" />
+          <ActionForm intent={reply} className="form-stack" resetOn={fieldsFor(resetValues, reply)}>
+            <ElfMailFields season={season} requestId={requestId} />
+            <label>Your reply
+              {season.codenameMode && <span className="field-note">Keep names and other clues out of your reply.</span>}
+              <textarea name="body" defaultValue={fieldsFor(values, reply)?.body} rows={3} maxLength={maxElfMailLength} required />
+            </label>
+            <Submit intent={reply} appearance="button-secondary">Send reply</Submit>
+          </ActionForm>
+        </>
+      )}
+    </section>
+  );
+}
+
+function Recipient({ data, values, resetValues, pendingReleaseAt }: Pick<DashboardProps, "data" | "values"> & {
+  resetValues?: Values;
+  pendingReleaseAt: number | null;
+}) {
   const { season, recipient } = data.exchange;
+  const outgoing = data.elfMail.toMatch;
+  const mailSubmitted = [elfMailIntents.prompt, elfMailIntents.question]
+    .some(intent => values.intent === intent || resetValues?.intent === intent);
   const pendingText = !season?.drawId
     ? "Your recipient will appear here after the organizer draws names."
     : season.completed
@@ -525,7 +628,7 @@ function Recipient({ data, pendingReleaseAt }: { data: DashboardData; pendingRel
       {pendingReleaseAt !== null ? (
         <DrawPartyCountdown key={data.requestId} releaseAt={pendingReleaseAt} readAt={data.exchange.readAt} />
       ) : recipient ? (
-        <details key={season?.drawId} className="recipient-reveal">
+        <details key={season?.drawId} className="recipient-reveal" open={mailSubmitted || undefined}>
           <summary className="reveal-summary">
             <span className="reveal-label">Your Secret Santa draw</span>
             <span className="reveal-title when-closed">A surprise<br />for you</span>
@@ -555,6 +658,10 @@ function Recipient({ data, pendingReleaseAt }: { data: DashboardData; pendingRel
               <div>
                 <h3>Wish list</h3>
                 <WishList items={data.recipientItems} mode="recipient" empty="Their wish list is empty for now." />
+                {season?.drawId && outgoing && (
+                  <ElfMailComposer matchName={recipient.name} messages={outgoing} season={season}
+                    requestId={data.requestId} values={values} resetValues={resetValues} />
+                )}
               </div>
             </div>
           </div>
@@ -844,6 +951,7 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
   const releaseAt = season?.drawReleaseAt;
   const pendingReleaseAt = releaseAt != null && releaseAt > readAt ? releaseAt : null;
   useDrawStatusRefresh(Boolean(season && !season.drawId), pendingReleaseAt !== null);
+  const inbox = data.elfMail.fromSanta;
   const organizer = self.role === "organizer";
   const values = error ? submitted : {};
   const resetValues = message ? submitted : undefined;
@@ -870,13 +978,18 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
         </div>
         {self.codename && <p className="section-note">Your codename is <strong>{self.codename}</strong>. Look for it on your gift.</p>}
         {(error || message) && <div className="dashboard-feedback" tabIndex={-1} ref={feedback}><Feedback error={error} message={message} /></div>}
-        <Recipient data={data} pendingReleaseAt={pendingReleaseAt} />
+        <Recipient data={data} values={values} resetValues={resetValues} pendingReleaseAt={pendingReleaseAt} />
         <nav className="dashboard-nav" aria-label="In this exchange">
           <a href="#wish-list">My wish list</a>
+          {inbox && <a href="#elf-mail">Elf Mail</a>}
           <a href="#little-ones">Little Ones</a>
           <a href="#invitations">Invitations</a>
           {organizer && <a href="#organizer">Organizer</a>}
         </nav>
+        {season?.drawId && inbox && (
+          <ElfMailInbox key={season.drawId} messages={inbox} season={season}
+            requestId={data.requestId} values={values} resetValues={resetValues} />
+        )}
         <div className="dashboard-columns">
           <section className="dashboard-section" id="wish-list" aria-labelledby="wish-list-heading">
             <span className="section-icon"><Icon name="gift" /></span>

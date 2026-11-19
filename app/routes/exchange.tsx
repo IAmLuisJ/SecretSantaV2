@@ -2,7 +2,9 @@ import { data, redirect } from "react-router";
 import type { ShouldRevalidateFunctionArgs } from "react-router";
 import type { Route } from "./+types/exchange";
 import { workerContext } from "../context";
+import { elfMailIntents } from "../elf-mail";
 import { MembershipChanged } from "../server/actor";
+import { ElfMailError, getElfMail, mutateElfMail } from "../server/elf-mail";
 import { ExchangeError, getExchange, mutateExchange } from "../server/exchange";
 import { GiftError, getDashboard, mutateGifts } from "../server/gifts";
 import { authCookies, authPost, formValues, readForm, requestOrigin, signedInUser } from "../server/http";
@@ -17,12 +19,19 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   if (!user) return redirect(`/?next=${encodeURIComponent(exchangePath(params.groupId))}`);
   const exchange = await getExchange(env.DB, user.id, params.groupId);
   if (!exchange) throw new Response("Exchange unavailable.", { status: 404 });
-  return getDashboard(env.DB, exchange, origin, mailAvailable(env));
+  const [dashboard, elfMail] = await Promise.all([
+    getDashboard(env.DB, exchange, origin, mailAvailable(env)),
+    getElfMail(env.DB, exchange),
+  ]);
+  return { ...dashboard, elfMail };
 }
 
-export function shouldRevalidate({ actionStatus, defaultShouldRevalidate }: ShouldRevalidateFunctionArgs) {
+export function shouldRevalidate({ actionStatus, formData, defaultShouldRevalidate }: ShouldRevalidateFunctionArgs) {
   // A draw can open while the submitted form is being validated.
-  return actionStatus === 400 || defaultShouldRevalidate;
+  if (actionStatus === 400) return true;
+  const intent = formData?.get("intent");
+  if (actionStatus !== 409) return defaultShouldRevalidate;
+  return Object.values(elfMailIntents).some(value => value === intent) || defaultShouldRevalidate;
 }
 
 export async function action({ request, context, params }: Route.ActionArgs) {
@@ -40,13 +49,17 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return redirect("/", { status: 303, headers: authCookies(response) });
     }
     const memberId = values.actingMembershipId ?? "";
-    const message = await mutateGifts(env, user.id, params.groupId, form, memberId)
+    const message = await mutateElfMail(env.DB, user.id, params.groupId, form, memberId)
+      ?? await mutateGifts(env, user.id, params.groupId, form, memberId)
       ?? await mutateExchange(env.DB, user.id, params.groupId, form, origin, memberId, mailAvailable(env));
     if (values.intent === "delete-group") return redirect("/", 303);
     return { values: { intent: values.intent, ...(values.childId ? { childId: values.childId } : {}) }, message };
   } catch (error) {
     if (error instanceof Response) throw error;
     if (error instanceof MembershipChanged) return data({ values: {}, error: error.message }, { status: 409 });
+    if (error instanceof ElfMailError) {
+      return data({ values: error.status === 409 ? {} : values, error: error.message }, { status: error.status });
+    }
     if (error instanceof GiftError || error instanceof ExchangeError) {
       return data({ values, error: error.message }, { status: 400 });
     }

@@ -307,7 +307,7 @@ label {
   font-weight: 650;
 }
 
-label input:not([type="checkbox"]), label textarea, label select {
+label input:not([type="checkbox"], [type="radio"]), label textarea, label select {
   display: block;
   width: 100%;
   min-width: 0;
@@ -800,6 +800,63 @@ details > p {
   margin-top: .45rem;
 }
 
+.elf-mail-composer {
+  margin-top: 1rem;
+  padding-top: .85rem;
+  border-top: 1px solid var(--rule);
+}
+
+.elf-mail-composer h4 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.elf-mail-prompts {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.elf-mail-prompts legend {
+  padding: 0;
+  font-weight: 650;
+}
+
+.elf-mail-prompts label {
+  font-weight: 400;
+}
+
+.elf-mail-composer .form-stack + .form-stack {
+  margin-top: .55rem;
+  padding-top: .85rem;
+  border-top: 1px solid var(--rule);
+}
+
+.elf-mail-inbox .form-stack {
+  max-width: 60ch;
+}
+
+.elf-mail-messages {
+  display: grid;
+  gap: .55rem;
+  max-width: 60ch;
+  margin: .75rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.elf-mail-messages li {
+  padding: .6rem .8rem;
+  border: 1px solid var(--rule);
+  border-radius: .5rem;
+  background: var(--linen);
+}
+
+.elf-mail-messages .elf-mail-sent {
+  background: var(--cream);
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .recipient-reveal[open] .recipient-name {
     animation: unwrap .25s ease-out both;
@@ -980,7 +1037,7 @@ address {
   padding-block: .45rem;
 }
 
-.check-line input[type="checkbox"] {
+.check-line input:is([type="checkbox"], [type="radio"]) {
   width: 1.15rem;
   height: 1.15rem;
   flex: none;
