@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 
 const port = process.env.SANTA_LOCAL_PORT ?? "5197";
@@ -218,8 +218,14 @@ test("one account can organize one group and join another", async ({ page, brows
   }
 });
 
-test("codename mode hides the match's identity but keeps their wish list", async ({ page, browser }) => {
+function submittedFields(button: Locator) {
+  return button.evaluate(element =>
+    Object.fromEntries(Array.from(new FormData((element as HTMLButtonElement).form!), ([key, value]) => [key, String(value)])));
+}
+
+test("codename mode keeps identities private while matches exchange Elf Mail", async ({ page, browser }) => {
   const organizerName = "Real Organizer Name";
+  const guestName = "Real Guest Name";
   await signIn(page, "/", `codename-host-${randomUUID()}@example.test`);
   await page.getByLabel("Group name").fill("Secret Identities");
   await page.getByLabel("Your display name").fill(organizerName);
@@ -232,15 +238,37 @@ test("codename mode hides the match's identity but keeps their wish list", async
   try {
     const guest = await context.newPage();
     await signIn(guest, invite, `codename-guest-${randomUUID()}@example.test`);
-    await guest.getByLabel("Your display name").fill("Guest");
+    await guest.setViewportSize({ width: 320, height: 780 });
+    await guest.getByLabel("Your display name").fill(guestName);
     await guest.getByRole("button", { name: "Join group" }).click();
     await expect(guest).toHaveURL(/\/exchange\/[a-f0-9-]{36}$/);
+    await expect(guest.getByRole("heading", { name: "Elf Mail inbox" })).toHaveCount(0);
 
     await page.reload();
     await page.getByRole("button", { name: "Enable codename mode" }).click();
     await expect(page.getByRole("button", { name: "Disable codename mode" })).toBeVisible();
+    const releaseTime = await page.evaluate(() => {
+      const future = new Date(Date.now() + 60 * 60_000);
+      return new Date(future.getTime() - future.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+    });
+    const releaseField = page.getByLabel("Draw Party release time");
+    await releaseField.fill(releaseTime);
     await page.getByRole("button", { name: "Draw names", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Redraw names", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Draw Party", exact: true })).toBeVisible();
+    const redraw = page.getByRole("button", { name: "Redraw names", exact: true });
+    const pendingDraw = await submittedFields(redraw);
+    const earlyMessage = await page.request.post(page.url(), {
+      headers: { Origin: origin },
+      form: { ...pendingDraw, intent: "elf-mail-question", body: "A question before the draw opens." },
+    });
+    expect(earlyMessage.status()).toBe(409);
+    await guest.reload();
+    await expect(guest.getByRole("heading", { name: "Elf Mail inbox" })).toHaveCount(0);
+
+    await releaseField.fill("");
+    await page.getByLabel("I understand everyone’s recipient can change.").check();
+    await redraw.click();
+    await expect(page.getByText("Draw published. Notifications are queued.", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Disable codename mode" })).toHaveCount(0);
 
     await guest.reload();
@@ -258,6 +286,60 @@ test("codename mode hides the match's identity but keeps their wish list", async
     await guest.reload();
     await match.getByText("Unwrap match", { exact: true }).click();
     await expect(match.locator(".recipient-name")).toHaveText(alias);
+
+    const question = "What snack would you hide from the rest of the house?";
+    const reply = "Chocolate-covered pretzels.";
+    const outgoing = match.getByRole("region", { name: "Elf Mail" });
+    const sent = outgoing.getByRole("list", { name: "Messages" });
+    await outgoing.getByText("Ask a question", { exact: true }).click();
+    await outgoing.getByRole("radio", { name: question, exact: true }).check();
+    expect(await guest.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+    await outgoing.getByRole("button", { name: "Send prompt" }).click();
+    await expect(sent.getByText(question, { exact: true })).toBeVisible();
+
+    await page.reload();
+    await page.getByRole("link", { name: "Elf Mail", exact: true }).click();
+    const inbox = page.getByRole("region", { name: "Elf Mail inbox" });
+    await expect(inbox.getByText(question, { exact: true })).toBeVisible();
+    await expect(inbox.getByText("Your Secret Santa", { exact: true })).toBeVisible();
+    await expect(inbox).not.toContainText(guestName);
+    await inbox.getByLabel("Your reply").fill(reply);
+    const replyButton = inbox.getByRole("button", { name: "Send reply" });
+    const previousReply = await submittedFields(replyButton);
+    await replyButton.click();
+    await expect(inbox.getByText(reply, { exact: true })).toBeVisible();
+
+    await guest.reload();
+    await match.getByText("Unwrap match", { exact: true }).click();
+    await expect(sent.getByText(reply, { exact: true })).toBeVisible();
+    await expect(sent.getByText(alias, { exact: true })).toBeVisible();
+    const repliedHtml = await (await guest.request.get(guest.url())).text();
+    for (const identity of [organizerName, organizerId]) expect(repliedHtml).not.toContain(identity);
+
+    await page.getByLabel("I understand everyone’s recipient can change.").check();
+    await page.getByRole("button", { name: "Redraw names", exact: true }).click();
+    await expect(page.getByText("Draw published. Notifications are queued.", { exact: true })).toBeVisible();
+    const staleReply = await page.request.post(new URL(page.url()).pathname, {
+      headers: { Origin: origin },
+      form: { ...previousReply, requestId: randomUUID(), body: "Reply from the previous draw." },
+    });
+    expect(staleReply.status()).toBe(409);
+    await expect(inbox.getByText(question, { exact: true })).toHaveCount(0);
+
+    await outgoing.getByText("Ask a question", { exact: true }).click();
+    await outgoing.getByLabel("Your question").fill("Question from the previous draw.");
+    await outgoing.getByRole("button", { name: "Send question" }).click();
+    await expect(guest.getByRole("alert")).toContainText("This Elf Mail conversation is unavailable.");
+    await match.getByText("Unwrap match", { exact: true }).click();
+    await expect(outgoing.getByRole("list", { name: "Messages" })).toHaveCount(0);
+    const nextQuestion = "What color would you pick?";
+    await outgoing.getByText("Ask a question", { exact: true }).click();
+    await outgoing.getByRole("radio", { name: nextQuestion, exact: true }).check();
+    await outgoing.getByRole("button", { name: "Send prompt" }).click();
+    await expect(sent.getByText(nextQuestion, { exact: true })).toBeVisible();
+    await page.reload();
+    await expect(inbox.getByText(nextQuestion, { exact: true })).toBeVisible();
+    await expect(inbox.getByText(reply, { exact: true })).toHaveCount(0);
   } finally {
     await context.close();
   }
@@ -425,6 +507,58 @@ test("a mobile group runs two private annual exchanges and shares Little Ones gi
     contexts.push(outsider);
     expect((await outsider.request.get(first.photoPaths.get("Alex")!)).status()).toBe(404);
 
+    const [giverName, recipientName] = [...first.pairs].find(([giver, recipient]) => giver !== "Alex" && recipient !== "Alex")!;
+    const giver = pages.get(giverName)!;
+    const recipient = pages.get(recipientName)!;
+    const outgoing = giver.locator("#recipient").getByRole("region", { name: "Elf Mail" });
+    const customQuestion = "Would you use a pocket-sized constellation map?";
+    await outgoing.getByText("Ask a question", { exact: true }).click();
+    await outgoing.getByLabel("Your question").fill(customQuestion);
+    const sendQuestion = outgoing.getByRole("button", { name: "Send question" });
+    const originalSubmission = await submittedFields(sendQuestion);
+    await sendQuestion.click();
+    await expect(outgoing.getByRole("list", { name: "Messages" }).getByText(customQuestion, { exact: true })).toBeVisible();
+    const duplicate = await giver.request.post(giver.url(), { headers: { Origin: origin }, form: originalSubmission });
+    expect(duplicate.status()).toBe(200);
+
+    const firstLine = "What is your favorite winter activity?";
+    const secondLine = "x".repeat(499 - firstLine.length);
+    const multiline = await giver.request.post(giver.url(), {
+      headers: { Origin: origin },
+      form: { ...originalSubmission, requestId: randomUUID(), body: `${firstLine}\r\n${secondLine}` },
+    });
+    expect(multiline.status()).toBe(200);
+    const invalidMessage = await giver.request.post(giver.url(), {
+      headers: { Origin: origin },
+      form: { ...originalSubmission, requestId: randomUUID(), body: "\0Invalid message." },
+    });
+    expect(invalidMessage.status()).toBe(400);
+
+    await recipient.reload();
+    const inbox = recipient.getByRole("region", { name: "Elf Mail inbox" });
+    const deliveredQuestion = inbox.getByRole("listitem").filter({ hasText: customQuestion });
+    await expect(deliveredQuestion).toHaveCount(1);
+    await expect(deliveredQuestion.getByText("Your Secret Santa", { exact: true })).toBeVisible();
+    await expect(inbox.getByText(firstLine)).toBeVisible();
+    await expect(inbox).not.toContainText(giverName);
+    expect(await (await recipient.request.get(recipient.url())).text()).not.toContain(originalSubmission.actingMembershipId);
+    for (const [name, participant] of pages) {
+      if (name === giverName || name === recipientName) continue;
+      expect(await (await participant.request.get(participant.url())).text()).not.toContain(customQuestion);
+    }
+    const signedOut = await outsider.request.get(giver.url(), { maxRedirects: 0 });
+    expect(signedOut.status()).toBe(302);
+    const foreignSubmission = await page.request.post(page.url(), {
+      headers: { Origin: origin },
+      form: { ...originalSubmission, body: "A question from a different account." },
+    });
+    expect(foreignSubmission.status()).toBe(409);
+    const unsolicitedReply = await page.request.post(page.url(), {
+      headers: { Origin: origin },
+      form: { ...originalSubmission, intent: "elf-mail-reply", actingMembershipId, body: "A reply without a question." },
+    });
+    expect(unsolicitedReply.status()).toBe(409);
+
     await page.getByText("Complete this exchange", { exact: true }).click();
     await page.getByLabel("Finish the exchange with the currently published draw.").check();
     await page.getByRole("button", { name: "Complete exchange", exact: true }).click();
@@ -437,6 +571,9 @@ test("a mobile group runs two private annual exchanges and shares Little Ones gi
     await expect(page.getByRole("button", { name: "Redraw names" })).toBeVisible();
     const second = await readDraw();
     for (const [giver, recipient] of second.pairs) expect(recipient).not.toBe(first.pairs.get(giver));
+    for (const participant of [giver, recipient]) {
+      expect(await (await participant.request.get(participant.url())).text()).not.toContain(customQuestion);
+    }
 
     await page.setViewportSize({ width: 320, height: 780 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
