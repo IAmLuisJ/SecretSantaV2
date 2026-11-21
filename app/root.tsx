@@ -1,9 +1,23 @@
 import type { ReactNode } from "react";
-import { isRouteErrorResponse, Link, Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
+import { isRouteErrorResponse, Link, Links, Meta, Outlet, Scripts, ScrollRestoration, useRouteLoaderData } from "react-router";
 import type { Route } from "./+types/root";
+import type { loader as accountLoader } from "./routes/account";
+import type { loader as exchangeLoader } from "./routes/exchange";
+import type { loader as entryLoader } from "./server/entry-route";
 import { Layout as SiteLayout } from "./ui";
 
 export function Layout({ children }: { children: ReactNode }) {
+  const home = useRouteLoaderData<typeof entryLoader>("routes/entry");
+  const join = useRouteLoaderData<typeof entryLoader>("routes/join");
+  const exchange = useRouteLoaderData<typeof exchangeLoader>("routes/exchange");
+  const accountPage = useRouteLoaderData<typeof accountLoader>("routes/account");
+  const entry = home ?? join;
+  const account = entry?.user || exchange || accountPage ? {
+    showExchangeLink: Boolean(exchange || accountPage || entry?.exchanges.length),
+    onExchangeList: Boolean(home?.showExchanges),
+    onAccountPage: Boolean(accountPage),
+  } : undefined;
+
   return (
     <html lang="en">
       <head>
@@ -16,7 +30,7 @@ export function Layout({ children }: { children: ReactNode }) {
         <Links />
       </head>
       <body>
-        <SiteLayout>{children}</SiteLayout>
+        <SiteLayout account={account}>{children}</SiteLayout>
         <ScrollRestoration />
         <Scripts />
       </body>

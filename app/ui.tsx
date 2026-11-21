@@ -18,7 +18,6 @@ type EntryProps = {
   error?: string;
   values: Values;
   defaultYear: number;
-  hasExchanges: boolean;
 };
 
 type DashboardProps = {
@@ -28,7 +27,7 @@ type DashboardProps = {
   values: Values;
 };
 
-type IconName = "arrow" | "gift" | "share" | "copy" | "facebook" | "pin" | "check" | "users";
+type IconName = "arrow" | "gift" | "share" | "copy" | "facebook" | "pin" | "check" | "users" | "mail";
 
 function Icon({ name }: { name: IconName }) {
   const shapes: Record<IconName, ReactNode> = {
@@ -40,6 +39,7 @@ function Icon({ name }: { name: IconName }) {
     pin: <><path d="M19 10c0 5-7 11-7 11S5 15 5 10a7 7 0 0 1 14 0Z" /><circle cx="12" cy="10" r="2.5" /></>,
     check: <path d="m5 12 4 4L19 6" />,
     users: <><circle cx="9" cy="8" r="3" /><path d="M3 20v-2a6 6 0 0 1 12 0v2m2-15a3 3 0 0 1 0 6m1 3a5 5 0 0 1 3 4v2" /></>,
+    mail: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3.5 7 8.5 6 8.5-6" /></>,
   };
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
@@ -48,19 +48,33 @@ function Icon({ name }: { name: IconName }) {
   );
 }
 
-export function Layout({ children }: { children: ReactNode }) {
+export function Layout({ children, account }: {
+  children: ReactNode;
+  account?: { showExchangeLink: boolean; onExchangeList: boolean; onAccountPage: boolean };
+}) {
   return (
     <>
       <a className="skip-link" href="#main">Skip to content</a>
       <header className="site-header">
-        <div className="site-width">
+        <div className="site-width site-header-inner">
           <Link className="wordmark" to="/">
             <HolidayStar className="brand-star" />
             Secret Santa
           </Link>
+          {account && (
+            <nav className="site-nav" aria-label="Account">
+              {account.showExchangeLink && (
+                <Link to="/" aria-current={account.onExchangeList ? "page" : undefined}>My exchanges</Link>
+              )}
+              <Link to="/account" aria-label="Account settings" aria-current={account.onAccountPage ? "page" : undefined}>Account</Link>
+              <ActionForm intent="sign-out" action="/">
+                <Submit intent="sign-out" appearance="site-sign-out">Sign out</Submit>
+              </ActionForm>
+            </nav>
+          )}
         </div>
       </header>
-      <main id="main" className="site-width">{children}</main>
+      <main id="main" className="site-width site-main">{children}</main>
       <footer className="site-width site-footer">
         <HolidayStar className="footer-star" /> Secret Santa
       </footer>
@@ -74,6 +88,23 @@ export function Feedback({ error, message }: { error?: string; message?: string 
       {error && <p className="feedback feedback-error" role="alert">{error}</p>}
       {message && <p className="feedback feedback-success" role="status">{message}</p>}
     </>
+  );
+}
+
+function SectionHeading({ id, icon, title, children }: {
+  id: string;
+  icon: IconName;
+  title: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="section-heading">
+      <span className="section-icon"><Icon name={icon} /></span>
+      <div>
+        <h2 id={id}>{title}</h2>
+        {children && <p>{children}</p>}
+      </div>
+    </div>
   );
 }
 
@@ -117,26 +148,6 @@ export function Submit({ intent, children, appearance = "", disabled = false }: 
   );
 }
 
-function SignOut({ action }: { action?: string }) {
-  return (
-    <ActionForm intent="sign-out" action={action}>
-      <Submit intent="sign-out" appearance="button-quiet">Sign out</Submit>
-    </ActionForm>
-  );
-}
-
-function SignedInRow({ user, action }: { user: User; action: string }) {
-  return (
-    <div className="signed-in-row">
-      <span>{user.email}</span>
-      <div className="button-row">
-        <Link className="button button-quiet" to="/account">Account settings</Link>
-        <SignOut action={action} />
-      </div>
-    </div>
-  );
-}
-
 function ManualJoin({ code }: { code?: string }) {
   return (
     <details className="join-by-code" open={Boolean(code) || undefined}>
@@ -163,37 +174,37 @@ export function EntryHero({ title, children }: { title: ReactNode; children?: Re
   );
 }
 
-export function ExchangeList({ exchanges, user, error, action }: {
+export function ExchangeList({ exchanges, user, error }: {
   exchanges: ExchangeSummary[];
   user: User;
   error?: string;
-  action: string;
 }) {
   return (
-    <div className="entry">
+    <div className="entry entry-exchanges">
       <EntryHero title="My exchanges" />
       <section className="entry-paper" aria-label="Your groups">
         <Feedback error={error} />
+        <p className="entry-account">Signed in as <strong>{user.email}</strong></p>
         <ul className="exchange-list">
           {exchanges.map(({ id, name, role }) => (
             <li key={id}>
               <Link to={exchangePath(id)}>
+                <span className="small-icon"><Icon name="gift" /></span>
                 <strong>{name}</strong>
-                <span className="section-note">{role === "organizer" ? "Organizer" : "Member"}</span>
+                <span className="tag">{role === "organizer" ? "Organizer" : "Member"}</span>
                 <Icon name="arrow" />
               </Link>
             </li>
           ))}
         </ul>
-        <Link className="button button-secondary" to="/?new=1">Create an exchange</Link>
+        <Link className="button" to="/?new=1">Create an exchange <Icon name="arrow" /></Link>
         <ManualJoin />
-        <SignedInRow user={user} action={action} />
       </section>
     </div>
   );
 }
 
-export function Entry({ user, invite, step, emailSignIn, error, values, defaultYear, hasExchanges }: EntryProps) {
+export function Entry({ user, invite, step, emailSignIn, error, values, defaultYear }: EntryProps) {
   const location = useLocation();
   const action = location.pathname + location.search;
   const authLink = (mode?: "password" | "register") => {
@@ -282,7 +293,6 @@ export function Entry({ user, invite, step, emailSignIn, error, values, defaultY
         )}
         {step === "group" && (
           <>
-            {hasExchanges && <Link className="button button-quiet" to="/">My exchanges</Link>}
             <h2 id="entry-heading">{invite ? "Join the exchange" : "Create an exchange"}</h2>
             <p>{invite ? "Enter the name your group will see." : "Set up your group, then send invitations."}</p>
             <ActionForm intent={invite ? "join-group" : "create-group"} action={action} className="form-stack">
@@ -307,7 +317,7 @@ export function Entry({ user, invite, step, emailSignIn, error, values, defaultY
               </Submit>
             </ActionForm>
             {!invite && <ManualJoin code={manualCode} />}
-            {user && <SignedInRow user={user} action={action} />}
+            {user && <p className="entry-account">Signed in as <strong>{user.email}</strong></p>}
           </>
         )}
       </section>
@@ -491,31 +501,37 @@ function Invitations({ group, inviteUrl, mailEnabled, values, resetValues }: {
   }
 
   return (
-    <section className="dashboard-section invite-section" id="invitations" aria-labelledby="invitations-heading">
-      <span className="section-icon"><Icon name="share" /></span>
-      <h2 id="invitations-heading">Invite your people</h2>
-      <p>Send the link or tell them the group code.</p>
-      <p className="group-code">Group code <strong>{group.code}</strong></p>
-      <label>Invitation link
-        <input ref={link} readOnly value={inviteUrl} onFocus={event => event.currentTarget.select()} />
-      </label>
-      <div className="button-row share-buttons">
-        {canShare && <button type="button" className="button" onClick={share}><Icon name="share" /> Share</button>}
-        <button type="button" className="button button-secondary" onClick={copy}><Icon name="copy" /> Copy link</button>
-        <a className="button button-secondary" href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(inviteUrl)}`} target="_blank" rel="noreferrer">
-          <Icon name="facebook" /> Facebook
-        </a>
-      </div>
-      <div className="share-status" role="status">{shareMessage}</div>
-      {mailEnabled && <details className="action-detail" open={Boolean(fields) || undefined}>
-        <summary>Email an invitation</summary>
-        <ActionForm intent="invite" className="form-stack" resetOn={fieldsFor(resetValues, "invite")}>
-          <label>Email address
-            <input name="email" type="email" defaultValue={fields?.email} maxLength={254} required />
+    <section className="dashboard-section" id="invitations" aria-labelledby="invitations-heading" tabIndex={-1}>
+      <SectionHeading id="invitations-heading" icon="share" title="Invite your people">
+        Send the link or tell them the group code.
+      </SectionHeading>
+      <div className="invite-options">
+        <div>
+          <label>Invitation link
+            <input ref={link} readOnly value={inviteUrl} onFocus={event => event.currentTarget.select()} />
           </label>
-          <Submit intent="invite">Send invitation</Submit>
-        </ActionForm>
-      </details>}
+          <div className="button-row share-buttons">
+            {canShare && <button type="button" className="button" onClick={share}><Icon name="share" /> Share</button>}
+            <button type="button" className="button button-secondary" onClick={copy}><Icon name="copy" /> Copy link</button>
+            <a className="button button-secondary" href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(inviteUrl)}`} target="_blank" rel="noreferrer">
+              <Icon name="facebook" /> Facebook
+            </a>
+          </div>
+          <div className="share-status" role="status">{shareMessage}</div>
+        </div>
+        <div className="invite-code">
+          <p className="group-code">Group code <strong>{group.code}</strong></p>
+          {mailEnabled && <details className="action-detail" open={Boolean(fields) || undefined}>
+            <summary>Email an invitation</summary>
+            <ActionForm intent="invite" className="form-stack" resetOn={fieldsFor(resetValues, "invite")}>
+              <label>Email address
+                <input name="email" type="email" defaultValue={fields?.email} maxLength={254} required />
+              </label>
+              <Submit intent="invite">Send invitation</Submit>
+            </ActionForm>
+          </details>}
+        </div>
+      </div>
     </section>
   );
 }
@@ -597,9 +613,11 @@ function ElfMailComposer({ matchName, messages, season, requestId, values, reset
 function ElfMailInbox({ messages, season, requestId, values, resetValues }: ElfMailProps) {
   const { reply } = elfMailIntents;
   return (
-    <section className="dashboard-section elf-mail-inbox" id="elf-mail" aria-labelledby="elf-mail-inbox-heading">
-      <h2 id="elf-mail-inbox-heading">Elf Mail inbox</h2>
-      {messages.length === 0 ? <p>Questions from your Secret Santa will appear here.</p> : (
+    <section className="dashboard-section elf-mail-inbox" id="elf-mail" aria-labelledby="elf-mail-inbox-heading" tabIndex={-1}>
+      <SectionHeading id="elf-mail-inbox-heading" icon="mail" title="Elf Mail inbox">
+        {messages.length === 0 && "Questions from your Secret Santa will appear here."}
+      </SectionHeading>
+      {messages.length > 0 && (
         <>
           <ElfMailMessages messages={messages} viewer="recipient" partner="Your Secret Santa" />
           <ActionForm intent={reply} className="form-stack" resetOn={fieldsFor(resetValues, reply)}>
@@ -638,7 +656,7 @@ function Recipient({ data, values, resetValues, pendingReleaseAt }: Pick<Dashboa
         <details key={season?.drawId} className="recipient-reveal" open={mailSubmitted || undefined}>
           <summary className="reveal-summary">
             <span className="reveal-label">Your Secret Santa draw</span>
-            <span className="reveal-title when-closed">A surprise<br />for you</span>
+            <span className="reveal-title when-closed">A surprise for you</span>
             <span className="reveal-action">
               <span className="when-closed">Unwrap match</span>
               <span className="when-open">Hide match</span>
@@ -687,10 +705,10 @@ function Recipient({ data, values, resetValues, pendingReleaseAt }: Pick<Dashboa
 function LittleOnes({ children, values, resetValues }: { children: DashboardData["children"]; values: Values; resetValues?: Values }) {
   const fields = fieldsFor(values, "add-child");
   return (
-    <section className="dashboard-section" id="little-ones" aria-labelledby="little-ones-heading">
-      <span className="section-icon"><Icon name="users" /></span>
-      <h2 id="little-ones-heading">Little Ones</h2>
-      <p>Everyone in the group can add wishes and mark gifts as purchased.</p>
+    <section className="dashboard-section" id="little-ones" aria-labelledby="little-ones-heading" tabIndex={-1}>
+      <SectionHeading id="little-ones-heading" icon="users" title="Little Ones">
+        Everyone in the group can add wishes and mark gifts as purchased.
+      </SectionHeading>
       {children.length === 0 && <p className="empty-line">Add a child to start their wish list.</p>}
       <ul className="child-list">
         {children.map(child => (
@@ -735,26 +753,25 @@ function SantaGuessPanel({ season, game, values }: {
   values: Values;
 }) {
   return (
-    <section className="dashboard-section santa-guess" id="guess-your-santa" aria-labelledby="santa-guess-heading">
-      <h2 id="santa-guess-heading">{game.status === "revealed" ? `${season.year} Santa reveal` : "Guess Your Santa"}</h2>
+    <section className="dashboard-section santa-guess" id="guess-your-santa" aria-labelledby="santa-guess-heading" tabIndex={-1}>
+      <SectionHeading id="santa-guess-heading" icon="check" title={game.status === "revealed" ? `${season.year} Santa reveal` : "Guess Your Santa"}>
+        {game.status === "open" && "After you open your gift, take one guess. Your pick stays private until the reveal, when everyone in the draw can see the real-name pairings and who guessed correctly."}
+      </SectionHeading>
       {game.status === "open" && (
-        <>
-          <p>After you open your gift, take one guess. Your pick stays private until the reveal, when everyone in the draw can see the real-name pairings and who guessed correctly.</p>
-          <ActionForm intent="lock-santa-guess" className="form-stack">
-            <SeasonFields season={season} includeDraw />
-            <label>Who gave you your gift?
-              <select name="guessedGiverId" defaultValue={fieldsFor(values, "lock-santa-guess")?.guessedGiverId ?? ""} required>
-                <option value="">Choose an adult</option>
-                {game.candidates.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
-              </select>
-            </label>
-            <label className="check-line">
-              <input name="confirm" type="checkbox" value="yes" required />
-              <span>I’ve opened my gift and I’m ready to lock in this guess.</span>
-            </label>
-            <Submit intent="lock-santa-guess">Lock in my guess</Submit>
-          </ActionForm>
-        </>
+        <ActionForm intent="lock-santa-guess" className="form-stack">
+          <SeasonFields season={season} includeDraw />
+          <label>Who gave you your gift?
+            <select name="guessedGiverId" defaultValue={fieldsFor(values, "lock-santa-guess")?.guessedGiverId ?? ""} required>
+              <option value="">Choose an adult</option>
+              {game.candidates.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+            </select>
+          </label>
+          <label className="check-line">
+            <input name="confirm" type="checkbox" value="yes" required />
+            <span>I’ve opened my gift and I’m ready to lock in this guess.</span>
+          </label>
+          <Submit intent="lock-santa-guess">Lock in my guess</Submit>
+        </ActionForm>
       )}
       {game.status === "locked" && (
         <>
@@ -882,14 +899,10 @@ function Organizer({ data, values, resetValues, drawLocked }: {
   const memberNames = new Map(members.map(member => [member.id, member.name]));
 
   return (
-    <section className="dashboard-section organizer" id="organizer" aria-labelledby="organizer-heading">
-      <div className="section-heading">
-        <span className="section-icon"><Icon name="users" /></span>
-        <div>
-          <h2 id="organizer-heading">Organizer tools</h2>
-          <p>Manage the adult roster, exclusions, and annual draw.</p>
-        </div>
-      </div>
+    <section className="dashboard-section" id="organizer" aria-labelledby="organizer-heading" tabIndex={-1}>
+      <SectionHeading id="organizer-heading" icon="users" title="Organizer tools">
+        Manage the adult roster, exclusions, and annual draw.
+      </SectionHeading>
       {mailFailures > 0 && (
         <p className="feedback feedback-warning">{mailFailures === 1 ? "1 group email couldn’t be delivered." : `${mailFailures} group emails couldn’t be delivered.`}</p>
       )}
@@ -901,75 +914,77 @@ function Organizer({ data, values, resetValues, drawLocked }: {
         </p>
       )}
       <div className="organizer-grid">
-        <div className="organizer-box">
-          <h3>{isOpen ? "Adult roster" : "Group members"}</h3>
-          {season && isOpen ? (
-            <ActionForm intent="set-roster" className="form-stack" key={`${season.id}-${season.revision}`}>
-              <SeasonFields season={season} />
-              <p>Select everyone who should give and receive a gift in this draw.</p>
+        <div className="roster-settings">
+          <div className="organizer-box">
+            <h3>{isOpen ? "Adult roster" : "Group members"}</h3>
+            {season && isOpen ? (
+              <ActionForm intent="set-roster" className="form-stack" key={`${season.id}-${season.revision}`}>
+                <SeasonFields season={season} />
+                <p>Select everyone who should give and receive a gift in this draw.</p>
+                <ul className="roster">
+                  {members.map(member => (
+                    <li key={member.id}>
+                      <label className="check-line">
+                        <input type="checkbox" name="memberId" value={member.id} defaultChecked={member.eligible} />
+                        <span><strong>{member.name}</strong><span className="member-email">{member.email}</span></span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+                <Submit intent="set-roster" appearance="button-secondary">Save roster</Submit>
+              </ActionForm>
+            ) : (
               <ul className="roster">
                 {members.map(member => (
-                  <li key={member.id}>
-                    <label className="check-line">
-                      <input type="checkbox" name="memberId" value={member.id} defaultChecked={member.eligible} />
-                      <span><strong>{member.name}</strong><span className="member-email">{member.email}</span></span>
-                    </label>
+                  <li className="member-line" key={member.id}>
+                    <strong>{member.name}</strong><span className="member-email">{member.email}</span>
                   </li>
                 ))}
               </ul>
-              <Submit intent="set-roster" appearance="button-secondary">Save roster</Submit>
-            </ActionForm>
-          ) : (
-            <ul className="roster">
-              {members.map(member => (
-                <li className="member-line" key={member.id}>
-                  <strong>{member.name}</strong><span className="member-email">{member.email}</span>
-                </li>
-              ))}
-            </ul>
-          )}
+            )}
+          </div>
+          <div className="organizer-box">
+            <h3>Pair exclusions</h3>
+            <p>Adults in a blocked pair can’t draw each other. Exclusions carry over to the next exchange.</p>
+            {exclusions.length > 0 && (
+              <ul className="exclusions">
+                {exclusions.map(pair => (
+                  <li key={`${pair.firstId}-${pair.secondId}`}>
+                    <span>{memberNames.get(pair.firstId)} and {memberNames.get(pair.secondId)}</span>
+                    <ActionForm intent="remove-exclusion">
+                      <input type="hidden" name="firstId" value={pair.firstId} />
+                      <input type="hidden" name="secondId" value={pair.secondId} />
+                      <Submit intent="remove-exclusion" appearance="button-quiet">Remove exclusion</Submit>
+                    </ActionForm>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {members.length >= 2 && (
+              <details className="action-detail" open={Boolean(pairFields) || undefined}>
+                <summary>Block a pair</summary>
+                <ActionForm intent="add-exclusion" className="form-stack" resetOn={fieldsFor(resetValues, "add-exclusion")}>
+                  <div className="field-pair">
+                    <label>First adult
+                      <select name="firstId" defaultValue={pairFields?.firstId ?? ""} required>
+                        <option value="">Choose an adult</option>
+                        {members.map(member => <option value={member.id} key={member.id}>{member.name}</option>)}
+                      </select>
+                    </label>
+                    <label>Second adult
+                      <select name="secondId" defaultValue={pairFields?.secondId ?? ""} required>
+                        <option value="">Choose an adult</option>
+                        {members.map(member => <option value={member.id} key={member.id}>{member.name}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                  <Submit intent="add-exclusion" appearance="button-secondary">Save exclusion</Submit>
+                </ActionForm>
+              </details>
+            )}
+          </div>
         </div>
         <div className="organizer-box">
-          <h3>Pair exclusions</h3>
-          <p>Adults in a blocked pair can’t draw each other. Exclusions carry over to the next exchange.</p>
-          {exclusions.length > 0 && (
-            <ul className="exclusions">
-              {exclusions.map(pair => (
-                <li key={`${pair.firstId}-${pair.secondId}`}>
-                  <span>{memberNames.get(pair.firstId)} and {memberNames.get(pair.secondId)}</span>
-                  <ActionForm intent="remove-exclusion">
-                    <input type="hidden" name="firstId" value={pair.firstId} />
-                    <input type="hidden" name="secondId" value={pair.secondId} />
-                    <Submit intent="remove-exclusion" appearance="button-quiet">Remove exclusion</Submit>
-                  </ActionForm>
-                </li>
-              ))}
-            </ul>
-          )}
-          {members.length >= 2 && (
-            <details className="action-detail" open={Boolean(pairFields) || undefined}>
-              <summary>Block a pair</summary>
-              <ActionForm intent="add-exclusion" className="form-stack" resetOn={fieldsFor(resetValues, "add-exclusion")}>
-                <div className="field-pair">
-                  <label>First adult
-                    <select name="firstId" defaultValue={pairFields?.firstId ?? ""} required>
-                      <option value="">Choose an adult</option>
-                      {members.map(member => <option value={member.id} key={member.id}>{member.name}</option>)}
-                    </select>
-                  </label>
-                  <label>Second adult
-                    <select name="secondId" defaultValue={pairFields?.secondId ?? ""} required>
-                      <option value="">Choose an adult</option>
-                      {members.map(member => <option value={member.id} key={member.id}>{member.name}</option>)}
-                    </select>
-                  </label>
-                </div>
-                <Submit intent="add-exclusion" appearance="button-secondary">Save exclusion</Submit>
-              </ActionForm>
-            </details>
-          )}
-        </div>
-        <div className="organizer-box draw-controls">
           <h3>{isOpen ? "Draw names" : "Start an exchange"}</h3>
           {season && isOpen ? (
             <>
@@ -1070,50 +1085,55 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
   return (
     <MembershipContext value={self.id}>
       <div className="dashboard">
-        <div className="dashboard-top">
-          <Link className="button button-quiet" to="/">My exchanges</Link>
-          <SignOut />
-          <h1>{group.name}</h1>
-          <p className="section-note">Hi, {self.name}</p>
-          {group.description && <p className="group-description multiline">{group.description}</p>}
-        </div>
-        <div className="exchange-status">
-          <span>{season ? `${season.year} exchange` : "Annual exchange"}</span>
-          <span className={`tag ${season?.drawId ? "tag-active" : ""}`}>
-            {season?.completed ? "Completed" : pendingReleaseAt !== null ? "Draw scheduled" : season?.drawId ? "Names drawn" : season ? "Waiting for the draw" : "Waiting for the next exchange"}
-          </span>
-        </div>
-        {self.codename && <p className="section-note">Your codename is <strong>{self.codename}</strong>. Look for it on your gift.</p>}
+        <header className="dashboard-top">
+          <div className="dashboard-identity">
+            <h1>{group.name}</h1>
+            <p className="section-note">Hi, {self.name}</p>
+            {group.description && <p className="group-description multiline">{group.description}</p>}
+            {self.codename && <p className="section-note">Your codename is <strong>{self.codename}</strong>. Look for it on your gift.</p>}
+          </div>
+          <div className="exchange-status">
+            <span>{season ? `${season.year} exchange` : "Annual exchange"}</span>
+            <span className={`tag ${season?.drawId ? "tag-active" : ""}`}>
+              {season?.completed ? "Completed" : pendingReleaseAt !== null ? "Draw scheduled" : season?.drawId ? "Names drawn" : season ? "Waiting for the draw" : "Waiting for the next exchange"}
+            </span>
+          </div>
+        </header>
         {(error || message) && <div className="dashboard-feedback" tabIndex={-1} ref={feedback}><Feedback error={error} message={message} /></div>}
         <Recipient data={data} values={values} resetValues={resetValues} pendingReleaseAt={pendingReleaseAt} />
-        <nav className="dashboard-nav" aria-label="In this exchange">
-          <a href="#wish-list">My wish list</a>
-          {santaGuess && <a href="#guess-your-santa">{santaGuess.status === "revealed" ? "Santa reveal" : "Guess Your Santa"}</a>}
-          {inbox && <a href="#elf-mail">Elf Mail</a>}
-          <a href="#little-ones">Little Ones</a>
-          <a href="#invitations">Invitations</a>
-          {organizer && <a href="#organizer">Organizer</a>}
-        </nav>
-        {season?.drawId && inbox && (
-          <ElfMailInbox key={season.drawId} messages={inbox} season={season}
-            requestId={data.requestId} values={values} resetValues={resetValues} />
-        )}
-        {season?.drawId && santaGuess && (
-          <SantaGuessPanel key={`${season.drawId}-${santaGuess.status}`} season={season} game={santaGuess} values={values} />
-        )}
-        <div className="dashboard-columns">
-          <section className="dashboard-section" id="wish-list" aria-labelledby="wish-list-heading">
-            <span className="section-icon"><Icon name="gift" /></span>
-            <h2 id="wish-list-heading">My wish list</h2>
-            <p>Your assigned giver can see your latest wishes here.{season?.codenameMode && " Keep names and other clues out of your wishes, links, and photos."}</p>
-            <WishList items={data.items} mode="adult" empty="Add a wish to give your Secret Santa an idea." />
-            <AddWish values={values} resetValues={resetValues} />
-            <AddressEditor address={data.address} values={values} resetValues={resetValues} />
-          </section>
-          <LittleOnes children={data.children} values={values} resetValues={resetValues} />
+        <div className="dashboard-body">
+          <nav className="dashboard-nav" aria-label="In this exchange">
+            <span className="dashboard-nav-title" aria-hidden="true">In this exchange</span>
+            <a href="#wish-list"><Icon name="gift" /> My wish list</a>
+            {santaGuess && <a href="#guess-your-santa"><Icon name="check" /> {santaGuess.status === "revealed" ? "Santa reveal" : "Guess Your Santa"}</a>}
+            {inbox && <a href="#elf-mail"><Icon name="mail" /> Elf Mail</a>}
+            <a href="#little-ones"><Icon name="users" /> Little Ones</a>
+            <a href="#invitations"><Icon name="share" /> Invitations</a>
+            {organizer && <a href="#organizer"><Icon name="users" /> Organizer</a>}
+          </nav>
+          <div className="dashboard-content">
+            {season?.drawId && inbox && (
+              <ElfMailInbox key={season.drawId} messages={inbox} season={season}
+                requestId={data.requestId} values={values} resetValues={resetValues} />
+            )}
+            {season?.drawId && santaGuess && (
+              <SantaGuessPanel key={`${season.drawId}-${santaGuess.status}`} season={season} game={santaGuess} values={values} />
+            )}
+            <div className="dashboard-columns">
+              <section className="dashboard-section" id="wish-list" aria-labelledby="wish-list-heading" tabIndex={-1}>
+                <SectionHeading id="wish-list-heading" icon="gift" title="My wish list">
+                  Your assigned giver can see your latest wishes here.{season?.codenameMode && " Keep names and other clues out of your wishes, links, and photos."}
+                </SectionHeading>
+                <WishList items={data.items} mode="adult" empty="Add a wish to give your Secret Santa an idea." />
+                <AddWish values={values} resetValues={resetValues} />
+                <AddressEditor address={data.address} values={values} resetValues={resetValues} />
+              </section>
+              <LittleOnes children={data.children} values={values} resetValues={resetValues} />
+            </div>
+            <Invitations group={group} inviteUrl={data.inviteUrl} mailEnabled={data.mailEnabled} values={values} resetValues={resetValues} />
+            {organizer && <Organizer data={data} values={values} resetValues={resetValues} drawLocked={pendingReleaseAt !== null} />}
+          </div>
         </div>
-        <Invitations group={group} inviteUrl={data.inviteUrl} mailEnabled={data.mailEnabled} values={values} resetValues={resetValues} />
-        {organizer && <Organizer data={data} values={values} resetValues={resetValues} drawLocked={pendingReleaseAt !== null} />}
       </div>
     </MembershipContext>
   );
