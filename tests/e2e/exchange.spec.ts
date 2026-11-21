@@ -24,17 +24,88 @@ async function signIn(page: Page, url: string, email: string) {
   await page.getByRole("textbox", { name: "Email address" }).fill(email);
   await page.getByRole("button", { name: "Send sign-in code" }).click();
   await expect(page.getByRole("heading", { name: "Check your inbox" })).toBeVisible();
+  await page.getByLabel("Sign-in code").fill(await mailCode(email, "sign-in"));
+  await page.getByRole("button", { name: "Verify code" }).click();
+}
+
+async function mailCode(email: string, purpose: "sign-in" | "confirmation") {
   let otp: string | undefined;
   await expect.poll(async () => {
     const output = await readFile(`.cloudflare/e2e-mail-${port}.log`, "utf8");
     const marker = `to: '${email}'`;
-    const message = output.includes(marker) ? output.split(marker).at(-1)?.split("[local mail]")[0] : undefined;
-    otp = message?.match(/sign-in code is (\d{6})/)?.[1];
+    otp = output.split("[local mail]").reverse()
+      .find(message => message.includes(marker) && message.includes(`${purpose} code is `))
+      ?.match(/code is (\d{6})/)?.[1];
     return otp;
   }).toMatch(/^\d{6}$/);
-  await page.getByLabel("Sign-in code").fill(otp!);
-  await page.getByRole("button", { name: "Verify code" }).click();
+  return otp!;
 }
+
+test("users can change their sign-in email and reopen the same exchange", async ({ page }) => {
+  const oldEmail = `before-${randomUUID()}@example.test`;
+  const newEmail = `after-${randomUUID()}@example.test`;
+  await signIn(page, "/", oldEmail);
+  await page.getByLabel("Group name").fill("Family exchange");
+  await page.getByLabel("Your display name").fill("Jess");
+  await page.getByRole("button", { name: "Create group" }).click();
+  await expect(page).toHaveURL(/\/exchange\/[a-f0-9-]{36}$/);
+  const dashboard = page.url();
+  await page.getByRole("link", { name: "My exchanges" }).click();
+  await page.getByRole("link", { name: "Account settings" }).click();
+  await page.getByRole("link", { name: "Change email" }).click();
+  await page.getByLabel("New email address").fill(newEmail);
+  await page.getByRole("button", { name: "Send confirmation code" }).click();
+  await page.getByLabel("Confirmation code").fill(await mailCode(newEmail, "confirmation"));
+  await page.getByRole("button", { name: "Confirm email change" }).click();
+  await expect(page.getByRole("status")).toHaveText("Email address updated.");
+  await expect(page.getByText(newEmail, { exact: true })).toBeVisible();
+
+  await page.getByRole("link", { name: "My exchanges" }).click();
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.getByRole("button", { name: "Send sign-in code" })).toBeVisible();
+  await signIn(page, "/", newEmail);
+  await page.getByRole("link", { name: "Family exchange Organizer" }).click();
+  await expect(page).toHaveURL(dashboard);
+  await expect(page.getByText("Hi, Jess")).toBeVisible();
+});
+
+test("merging accounts brings both exchanges and the other account’s wishes into one sign-in", async ({ page, browser }) => {
+  const primary = `primary-${randomUUID()}@example.test`;
+  const other = `other-${randomUUID()}@example.test`;
+  await signIn(page, "/", primary);
+  await page.getByLabel("Group name").fill("Friends exchange");
+  await page.getByLabel("Your display name").fill("Jess");
+  await page.getByRole("button", { name: "Create group" }).click();
+  await page.getByRole("link", { name: "My exchanges" }).click();
+
+  const context = await browser.newContext({ baseURL: origin });
+  try {
+    const otherPage = await context.newPage();
+    await signIn(otherPage, "/", other);
+    await otherPage.getByLabel("Group name").fill("Family exchange");
+    await otherPage.getByLabel("Your display name").fill("Jessie");
+    await otherPage.getByRole("button", { name: "Create group" }).click();
+    await addressAndWish(otherPage, "Jessie");
+    const otherDashboard = otherPage.url();
+
+    await page.getByRole("link", { name: "Account settings" }).click();
+    await page.getByRole("link", { name: "Merge accounts" }).click();
+    await page.getByLabel("Other email address").fill(other);
+    await page.getByRole("button", { name: "Send confirmation code" }).click();
+    await page.getByLabel("Confirmation code").fill(await mailCode(other, "confirmation"));
+    await page.getByRole("button", { name: "Confirm merge" }).click();
+    await expect(page.getByRole("status")).toHaveText("Accounts merged.");
+    await expect(page.getByText(primary, { exact: true })).toBeVisible();
+    await page.getByRole("link", { name: "My exchanges" }).click();
+    await expect(page.getByRole("link", { name: "Friends exchange Organizer" })).toBeVisible();
+    await page.getByRole("link", { name: "Family exchange Organizer" }).click();
+    await expect(page).toHaveURL(otherDashboard);
+    await expect(page.getByText("Jessie wish", { exact: true })).toBeVisible();
+    expect((await otherPage.request.get(otherDashboard, { maxRedirects: 0 })).status()).toBe(302);
+  } finally {
+    await context.close();
+  }
+});
 
 async function addressAndWish(page: Page, name: string) {
   await page.getByText("Add a mailing address", { exact: true }).click();

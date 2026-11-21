@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { isIP } from "node:net";
 import { betterAuth } from "better-auth";
 import { emailOTP } from "better-auth/plugins/email-otp";
+import { z } from "zod";
 import type { Env } from "../env.ts";
 import { maxPasswordLength, minPasswordLength } from "../password.ts";
 import { isLoopbackOrigin, mailAvailable, sendDirect } from "./mail.ts";
@@ -14,6 +15,7 @@ const registerPath = basePath + "/sign-up/email";
 const signOutPath = basePath + "/sign-out";
 const windowSeconds = 15 * 60;
 const otpSeconds = 5 * 60;
+const emailSchema = z.email();
 
 export function emailSignInEnabled(env: Env, origin: string): boolean {
   return env.EMAIL_SIGN_IN_ENABLED?.trim().toLowerCase() !== "false" && mailAvailable(env, origin);
@@ -26,8 +28,13 @@ function allowedOrigin(env: Env, origin: string): boolean {
   return origin === env.APP_ORIGIN && url?.origin === origin && (url.protocol === "https:" || local);
 }
 
-function digest(secret: string, purpose: string, input: string): string {
+export function digest(secret: string, purpose: string, input: string): string {
   return createHmac("sha256", secret).update(purpose).update("\0").update(input).digest("hex");
+}
+
+export function normalizeEmail(value: unknown): string | null {
+  const email = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return email.length <= 254 && emailSchema.safeParse(email).success ? email : null;
 }
 
 function createAuth(env: Env, origin: string, onDeliveryFailure?: () => void) {
@@ -118,6 +125,14 @@ async function useLimit(env: Env, scope: string, value: string, maximum: number,
   return result.meta.changes === 1;
 }
 
+export async function allowAuthAttempt(
+  request: Request, env: Env, scope: string, email: string, ipMax: number, emailMax: number, cooldown = 0,
+): Promise<boolean> {
+  const network = clientNetwork(request, new URL(request.url).origin);
+  return await useLimit(env, scope + ":ip", network, ipMax)
+    && await useLimit(env, scope + ":email", email, emailMax, cooldown);
+}
+
 function reject(status: number, message: string, extraHeaders: Record<string, string> = {}): Response {
   return Response.json({ message }, { status, headers: { "Cache-Control": "no-store", ...extraHeaders } });
 }
@@ -146,10 +161,8 @@ export async function handleAuth(request: Request, env: Env, _executionContext?:
       return reject(400, "Invalid request.");
     }
     const { email: submittedEmail, otp, type, password } = incoming as Record<string, unknown>;
-    const email = typeof submittedEmail === "string" ? submittedEmail.trim().toLowerCase() : "";
-    if (email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-      return reject(400, "Enter a valid email address.");
-    }
+    const email = normalizeEmail(submittedEmail);
+    if (!email) return reject(400, "Enter a valid email address.");
 
     const sending = pathname === sendPath;
     if (!usingCode) {
@@ -169,9 +182,9 @@ export async function handleAuth(request: Request, env: Env, _executionContext?:
     const [scope, ipMax, emailMax] = signingUp ? ["register", 10, 4] as const
       : !usingCode ? ["password", 30, 10] as const
       : sending ? ["send", 20, 4] as const : ["verify", 80, 12] as const;
-    const ipAllowed = await useLimit(env, scope + ":ip", clientNetwork(request, url.origin), ipMax);
-    const emailAllowed = ipAllowed && await useLimit(env, scope + ":email", email, emailMax, sending ? 45 : 0);
-    if (!emailAllowed) return reject(429, "Too many attempts. Wait and try again.", { "Retry-After": "45" });
+    if (!await allowAuthAttempt(request, env, scope, email, ipMax, emailMax, sending ? 45 : 0)) {
+      return reject(429, "Too many attempts. Wait and try again.", { "Retry-After": "45" });
+    }
 
     // Password accounts can hold private group data even though they haven't
     // proven ownership of their address. A code must never claim that account.
@@ -194,6 +207,17 @@ export async function handleAuth(request: Request, env: Env, _executionContext?:
   }
   if (signingUp && !result.ok) return reject(400, "Could not create an account.");
   if (pathname === passwordPath && !result.ok) return reject(401, "Email address or password is incorrect.");
+  if (result.ok && (pathname === verifyPath || pathname === passwordPath || signingUp)) {
+    // The email can change between Better Auth checking the credentials and creating the session.
+    const { token } = await result.clone().json() as { token: string | null };
+    const current = token && await env.DB.prepare(`
+      SELECT 1 FROM session s JOIN "user" u ON u.id = s.userId WHERE s.token = ? AND u.email = ?
+    `).bind(token, body.email).first();
+    if (!current) {
+      if (token) await env.DB.prepare("DELETE FROM session WHERE token = ?").bind(token).run();
+      return reject(409, "Your sign-in information changed. Try signing in again.");
+    }
+  }
   const response = new Response(result.body, result);
   response.headers.set("Cache-Control", "no-store");
   return response;

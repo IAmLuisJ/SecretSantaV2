@@ -68,7 +68,7 @@ export function Layout({ children }: { children: ReactNode }) {
   );
 }
 
-function Feedback({ error, message }: { error?: string; message?: string }) {
+export function Feedback({ error, message }: { error?: string; message?: string }) {
   return (
     <>
       {error && <p className="feedback feedback-error" role="alert">{error}</p>}
@@ -77,13 +77,13 @@ function Feedback({ error, message }: { error?: string; message?: string }) {
   );
 }
 
-function ActionForm({ intent, action, children, className, upload = false, resetOn, onSubmit }: {
+export function ActionForm({ intent, action, children, className, upload = false, resetOn, onSubmit }: {
   intent: string;
   action?: string;
   children: ReactNode;
   className?: string;
   upload?: boolean;
-  resetOn?: Values;
+  resetOn?: object;
   onSubmit?: FormProps["onSubmit"];
 }) {
   const form = useRef<HTMLFormElement>(null);
@@ -102,7 +102,7 @@ function ActionForm({ intent, action, children, className, upload = false, reset
   );
 }
 
-function Submit({ intent, children, appearance = "", disabled = false }: {
+export function Submit({ intent, children, appearance = "", disabled = false }: {
   intent: string;
   children: ReactNode;
   appearance?: string;
@@ -125,6 +125,18 @@ function SignOut({ action }: { action?: string }) {
   );
 }
 
+function SignedInRow({ user, action }: { user: User; action: string }) {
+  return (
+    <div className="signed-in-row">
+      <span>{user.email}</span>
+      <div className="button-row">
+        <Link className="button button-quiet" to="/account">Account settings</Link>
+        <SignOut action={action} />
+      </div>
+    </div>
+  );
+}
+
 function ManualJoin({ code }: { code?: string }) {
   return (
     <details className="join-by-code" open={Boolean(code) || undefined}>
@@ -139,7 +151,7 @@ function ManualJoin({ code }: { code?: string }) {
   );
 }
 
-function EntryHero({ title, children }: { title: ReactNode; children?: ReactNode }) {
+export function EntryHero({ title, children }: { title: ReactNode; children?: ReactNode }) {
   return (
     <div className="entry-hero">
       <div className="entry-hero-copy">
@@ -175,7 +187,7 @@ export function ExchangeList({ exchanges, user, error, action }: {
         </ul>
         <Link className="button button-secondary" to="/?new=1">Create an exchange</Link>
         <ManualJoin />
-        <div className="signed-in-row"><span>{user.email}</span><SignOut action={action} /></div>
+        <SignedInRow user={user} action={action} />
       </section>
     </div>
   );
@@ -295,12 +307,7 @@ export function Entry({ user, invite, step, emailSignIn, error, values, defaultY
               </Submit>
             </ActionForm>
             {!invite && <ManualJoin code={manualCode} />}
-            {user && (
-              <div className="signed-in-row">
-                <span>{user.email}</span>
-                <SignOut action={action} />
-              </div>
-            )}
+            {user && <SignedInRow user={user} action={action} />}
           </>
         )}
       </section>

@@ -11,9 +11,13 @@ export function requestOrigin(request: Request, env: Env): string {
   return origin;
 }
 
-export async function signedInUser(request: Request, env: Env): Promise<User | null> {
+export async function signedInSession(request: Request, env: Env) {
   if (!request.headers.get("Cookie")) return null;
-  const session = await getAuth(env, requestOrigin(request, env)).api.getSession({ headers: request.headers });
+  return getAuth(env, requestOrigin(request, env)).api.getSession({ headers: request.headers });
+}
+
+export async function signedInUser(request: Request, env: Env): Promise<User | null> {
+  const session = await signedInSession(request, env);
   return session ? { id: session.user.id, email: session.user.email } : null;
 }
 

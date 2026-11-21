@@ -4,6 +4,7 @@ import type { RouteConfig } from "@react-router/dev/routes";
 export default [
   route("/", "routes/entry.tsx"),
   route("join", "routes/join.tsx"),
+  route("account", "routes/account.tsx"),
   route("exchange", "routes/exchange-index.ts"),
   route("exchange/:groupId", "routes/exchange.tsx"),
   route("photos/:id", "routes/photo.ts"),

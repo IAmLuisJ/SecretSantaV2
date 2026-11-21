@@ -9,6 +9,37 @@ async function createAccount(page: Page, email: string, password: string) {
   await page.getByRole("button", { name: "Create account" }).click();
 }
 
+test("password accounts can merge while email delivery is disabled", async ({ page, browser, baseURL }) => {
+  const primary = `primary-${randomUUID()}@example.test`;
+  const other = `other-${randomUUID()}@example.test`;
+  const password = "a password used only for tests";
+  await page.goto("/");
+  await createAccount(page, primary, password);
+  await page.getByRole("link", { name: "Account settings" }).click();
+
+  const context = await browser.newContext({ baseURL });
+  try {
+    const otherPage = await context.newPage();
+    await otherPage.goto("/");
+    await createAccount(otherPage, other, password);
+    await otherPage.getByLabel("Group name").fill("Family exchange");
+    await otherPage.getByLabel("Your display name").fill("Jessie");
+    await otherPage.getByRole("button", { name: "Create group" }).click();
+    await expect(otherPage).toHaveURL(/\/exchange\/[a-f0-9-]{36}$/);
+
+    await page.getByRole("link", { name: "Merge accounts" }).click();
+    await page.getByLabel("Other email address").fill(other);
+    await page.getByLabel("Other account’s password").fill(password);
+    await page.getByRole("button", { name: "Confirm merge" }).click();
+    await expect(page.getByRole("status")).toHaveText("Accounts merged.");
+    await page.getByRole("link", { name: "My exchanges" }).click();
+    await page.getByRole("link", { name: "Family exchange Organizer" }).click();
+    await expect(page).toHaveURL(otherPage.url());
+  } finally {
+    await context.close();
+  }
+});
+
 test("password accounts can create and join an exchange without email", async ({ page, browser }) => {
   const email = `organizer-${randomUUID()}@example.test`;
   const password = "a password used only for tests";

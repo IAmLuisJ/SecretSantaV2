@@ -286,6 +286,20 @@ p, h1, h2, h3, li, label, address, .signed-in-row {
   font-size: .88rem;
 }
 
+.account-email {
+  margin-bottom: 1rem;
+}
+
+.account-options {
+  display: grid;
+  gap: .6rem;
+  margin-top: 1.25rem;
+}
+
+.account-nav {
+  margin-top: .75rem;
+}
+
 .form-stack {
   display: grid;
   min-width: 0;
