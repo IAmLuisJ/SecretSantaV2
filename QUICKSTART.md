@@ -29,6 +29,8 @@ Run Secret Santa V2 locally and unwrap a test match. The commands use a POSIX sh
 
 To try a countdown, set a future **Draw Party release time** in your browser's local time before drawing. Participants can unwrap their matches when the countdown ends.
 
+Use **My exchanges** in the header to switch groups and **Account** to manage your sign-in.
+
 ## Try password sign-in
 
 Stop the dev server and restart it with email-code sign-in disabled.

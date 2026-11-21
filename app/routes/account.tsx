@@ -142,15 +142,17 @@ export default function AccountSettings({ loaderData, actionData }: Route.Compon
             )}
           </>
         )}
-        <div className="button-row account-nav">
-          {mode === "merge-accounts" && canMergeWithCode && (
-            <Link className="button button-quiet" to="/account?mode=merge-password">Use the other account’s password</Link>
-          )}
-          {usingPassword && canMergeWithCode && (
-            <Link className="button button-quiet" to="/account?mode=merge-accounts">Use an email code</Link>
-          )}
-          <Link className="button button-quiet" to={mode ? "/account" : "/"}>{mode ? "Back to account settings" : "My exchanges"}</Link>
-        </div>
+        {mode && (
+          <div className="button-row account-nav">
+            {mode === "merge-accounts" && canMergeWithCode && (
+              <Link className="button button-quiet" to="/account?mode=merge-password">Use the other account’s password</Link>
+            )}
+            {usingPassword && canMergeWithCode && (
+              <Link className="button button-quiet" to="/account?mode=merge-accounts">Use an email code</Link>
+            )}
+            <Link className="button button-quiet" to="/account">Back to account settings</Link>
+          </div>
+        )}
       </section>
     </div>
   );

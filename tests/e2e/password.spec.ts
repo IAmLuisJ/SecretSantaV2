@@ -72,8 +72,10 @@ test("password accounts can create and join an exchange without email", async ({
   }
 
   const dashboard = page.url();
-  await page.getByRole("button", { name: "Sign out" }).click();
+  const account = page.getByRole("banner").getByRole("navigation", { name: "Account" });
+  await account.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(`${new URL(dashboard).origin}/`);
+  await expect(account).toHaveCount(0);
   await page.goto(dashboard);
   await page.getByLabel("Email address").fill(email);
   await page.getByLabel("Password").fill("a different password");

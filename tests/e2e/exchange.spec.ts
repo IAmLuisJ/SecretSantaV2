@@ -50,8 +50,10 @@ test("users can change their sign-in email and reopen the same exchange", async 
   await page.getByRole("button", { name: "Create group" }).click();
   await expect(page).toHaveURL(/\/exchange\/[a-f0-9-]{36}$/);
   const dashboard = page.url();
-  await page.getByRole("link", { name: "My exchanges" }).click();
-  await page.getByRole("link", { name: "Account settings" }).click();
+  const accountNav = page.getByRole("banner").getByRole("navigation", { name: "Account" });
+  const settings = accountNav.getByRole("link", { name: "Account settings" });
+  await settings.click();
+  await expect(settings).toHaveAttribute("aria-current", "page");
   await page.getByRole("link", { name: "Change email" }).click();
   await page.getByLabel("New email address").fill(newEmail);
   await page.getByRole("button", { name: "Send confirmation code" }).click();
@@ -60,8 +62,7 @@ test("users can change their sign-in email and reopen the same exchange", async 
   await expect(page.getByRole("status")).toHaveText("Email address updated.");
   await expect(page.getByText(newEmail, { exact: true })).toBeVisible();
 
-  await page.getByRole("link", { name: "My exchanges" }).click();
-  await page.getByRole("button", { name: "Sign out" }).click();
+  await accountNav.getByRole("button", { name: "Sign out" }).click();
   await expect(page.getByRole("button", { name: "Send sign-in code" })).toBeVisible();
   await signIn(page, "/", newEmail);
   await page.getByRole("link", { name: "Family exchange Organizer" }).click();
@@ -232,6 +233,9 @@ test("one account can organize one group and join another", async ({ page, brows
   await page.getByLabel("Your display name").fill("Family organizer");
   await page.getByRole("button", { name: "Create group" }).click();
   await expect(page.getByRole("heading", { name: "Organizer tools" })).toBeVisible();
+  const account = page.getByRole("banner").getByRole("navigation", { name: "Account" });
+  const myExchanges = account.getByRole("link", { name: "My exchanges" });
+  await expect(account.getByRole("button", { name: "Sign out" })).toBeVisible();
   const family = page.url();
   const familyMember = await page.locator('input[name="actingMembershipId"]').first().inputValue();
   await addressAndWish(page, "Family");
@@ -270,15 +274,17 @@ test("one account can organize one group and join another", async ({ page, brows
     await page.goto(invite);
     await expect(page).toHaveURL(friends);
 
-    await page.getByRole("link", { name: "My exchanges" }).click();
+    await myExchanges.click();
+    await expect(myExchanges).toHaveAttribute("aria-current", "page");
     await expect(page.getByRole("link", { name: "Friends exchange Member" })).toBeVisible();
     await page.getByRole("link", { name: "Family exchange" }).click();
     await expect(page).toHaveURL(family);
     await expect(page.getByRole("heading", { name: "Organizer tools" })).toBeVisible();
     await expect(page.locator("#wish-list").getByText("Family wish")).toBeVisible();
 
-    await page.getByRole("link", { name: "My exchanges" }).click();
+    await myExchanges.click();
     await page.getByRole("link", { name: "Create an exchange" }).click();
+    await expect(myExchanges).not.toHaveAttribute("aria-current", "page");
     await page.getByLabel("Group name").fill("Office exchange");
     await page.getByLabel("Your display name").fill("Office organizer");
     await page.getByRole("button", { name: "Create group" }).click();
