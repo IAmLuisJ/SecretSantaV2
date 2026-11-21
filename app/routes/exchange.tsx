@@ -31,7 +31,8 @@ export function shouldRevalidate({ actionStatus, formData, defaultShouldRevalida
   if (actionStatus === 400) return true;
   const intent = formData?.get("intent");
   if (actionStatus !== 409) return defaultShouldRevalidate;
-  return Object.values(elfMailIntents).some(value => value === intent) || defaultShouldRevalidate;
+  return intent === "lock-santa-guess" || intent === "reveal-santa-guesses" || intent === "set-santa-guess"
+    || Object.values(elfMailIntents).some(value => value === intent) || defaultShouldRevalidate;
 }
 
 export async function action({ request, context, params }: Route.ActionArgs) {
@@ -61,7 +62,8 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return data({ values: error.status === 409 ? {} : values, error: error.message }, { status: error.status });
     }
     if (error instanceof GiftError || error instanceof ExchangeError) {
-      return data({ values, error: error.message }, { status: 400 });
+      const status = error instanceof ExchangeError ? error.status : 400;
+      return data({ values: status === 409 ? {} : values, error: error.message }, { status });
     }
     console.error("Exchange action failed.");
     return data({ values, error: "We couldn’t save your changes. Try again." }, { status: 500 });

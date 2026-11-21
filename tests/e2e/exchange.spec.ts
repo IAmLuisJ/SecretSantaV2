@@ -345,6 +345,72 @@ test("codename mode keeps identities private while matches exchange Elf Mail", a
   }
 });
 
+test("Guess Your Santa keeps a participant’s guess private until the organizer reveals real pairings", async ({ page, browser }) => {
+  await signIn(page, "/", `santa-guess-host-${randomUUID()}@example.test`);
+  await page.getByLabel("Group name").fill("Guessing game");
+  await page.getByLabel("Your display name").fill("Riley Organizer");
+  await page.getByRole("button", { name: "Create group" }).click();
+  const invite = await page.getByLabel("Invitation link").inputValue();
+
+  const context = await browser.newContext({ baseURL: origin });
+  try {
+    const guest = await context.newPage();
+    await signIn(guest, invite, `santa-guess-guest-${randomUUID()}@example.test`);
+    await guest.getByLabel("Your display name").fill("Jordan Participant");
+    await guest.getByRole("button", { name: "Join group" }).click();
+    await expect(guest).toHaveURL(/\/exchange\/[a-f0-9-]{36}$/);
+
+    await page.reload();
+    await page.getByRole("button", { name: "Enable codename mode" }).click();
+    await expect(page.getByRole("button", { name: "Disable codename mode" })).toBeVisible();
+    await expect(page.getByText(/real names.*even when the draw uses codenames/i)).toBeVisible();
+    await page.getByRole("checkbox", { name: /I understand the reveal shares real names/i }).check();
+    await page.getByRole("button", { name: "Enable Guess Your Santa" }).click();
+    await expect(page.getByText(/Guess Your Santa is on/i)).toBeVisible();
+    await page.getByRole("button", { name: "Draw names", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Reveal Santas", exact: true })).toBeVisible();
+
+    await guest.reload();
+    const game = guest.locator("#guess-your-santa");
+    await expect(game.getByRole("heading", { name: "Guess Your Santa" })).toBeVisible();
+    await expect(game.getByRole("table")).toHaveCount(0);
+    const staleGuest = await context.newPage();
+    await staleGuest.goto(guest.url());
+    const staleGame = staleGuest.locator("#guess-your-santa");
+    await staleGame.getByLabel("Who gave you your gift?").selectOption({ label: "Riley Organizer" });
+    await staleGame.getByRole("checkbox", { name: /I’ve opened my gift/ }).check();
+
+    await game.getByLabel("Who gave you your gift?").selectOption({ label: "Riley Organizer" });
+    await game.getByRole("checkbox", { name: /I’ve opened my gift/ }).check();
+    await game.getByRole("button", { name: "Lock in my guess" }).click();
+    await expect(game.getByText(/Guess locked/)).toContainText("Riley Organizer");
+    await guest.reload();
+    await expect(game.getByText(/Guess locked/)).toContainText("Riley Organizer");
+    await expect(game.getByRole("button", { name: "Lock in my guess" })).toHaveCount(0);
+    const privatePage = await (await guest.request.get(guest.url())).text();
+    expect(privatePage).not.toContain("giverName");
+    expect(privatePage).not.toContain("guessCorrect");
+
+    await page.reload();
+    await expect(page.locator("#guess-your-santa").getByRole("button", { name: "Lock in my guess" })).toBeVisible();
+    await expect(page.locator("#guess-your-santa").getByRole("table")).toHaveCount(0);
+    await page.getByRole("checkbox", { name: /Share the real names and close guessing/ }).check();
+    await page.getByRole("button", { name: "Reveal Santas", exact: true }).click();
+    await expect(page.getByRole("table", { name: /Secret Santa pairings/ })).toBeVisible();
+
+    await guest.reload();
+    const pairings = game.getByRole("table", { name: /Secret Santa pairings/ });
+    await expect(pairings.getByRole("row", { name: "Riley Organizer Jordan Participant Correct" })).toBeVisible();
+    await expect(pairings.getByRole("row", { name: "Jordan Participant Riley Organizer No guess" })).toBeVisible();
+
+    await staleGame.getByRole("button", { name: "Lock in my guess" }).click();
+    await expect(staleGuest.getByRole("alert")).toBeVisible();
+    await expect(staleGame.getByRole("table", { name: /Secret Santa pairings/ })).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
 test("a mobile group runs two private annual exchanges and shares Little Ones gifts", async ({ page, browser }) => {
   const slug = randomUUID().slice(0, 8);
   const email = (name: string) => `${name.toLowerCase()}-${slug}@example.test`;

@@ -10,9 +10,10 @@ const users = ["alex", "blake", "casey", "devon", "erin", "outsider"];
 const user = (id: string) => ({ id, email: `${id}@example.test` });
 const multipleExchangesMigration = "0005_multiple_exchanges.sql";
 const drawPartyMigration = "0006_draw_party.sql";
+const santaGuessMigration = "0008_guess_your_santa.sql";
 const migrations = [
   "0001_auth_mail.sql", "0002_exchange.sql", "0003_gifts.sql", "0004_codenames.sql",
-  multipleExchangesMigration, drawPartyMigration,
+  multipleExchangesMigration, drawPartyMigration, santaGuessMigration,
 ];
 
 async function getExchange(db: D1Database, userId: string) {
@@ -196,8 +197,10 @@ test("the multiple-exchanges migration preserves existing draws, wishes, and mem
   assert.equal(fixture.count("photo_cleanup", "photo_key = 'photos/scarf'"), 1);
 
   fixture.migrate(drawPartyMigration);
+  fixture.migrate(santaGuessMigration);
   const exchange = await getGroupExchange(fixture.db, "alex", "group");
   assert.equal(exchange?.season?.drawReleaseAt, null);
+  assert.equal(exchange?.season?.santaGuessEnabled, false);
   assert.equal(exchange?.recipient?.name, "Detective Eggnog");
 });
 
@@ -295,6 +298,126 @@ test("invalid release dates leave the draw untouched and an immediate redraw rep
 function drawReference(current: Awaited<ReturnType<typeof season>>) {
   return { seasonId: current.id, revision: current.revision, drawId: current.drawId ?? "" };
 }
+
+test("Guess Your Santa starts off and only an organizer who accepts the real-name reveal can enable it", async () => {
+  const { db } = await setup(2);
+  const current = await season(db);
+  const settings = { ...drawReference(current), enabled: 1 };
+
+  assert.equal(current.santaGuessEnabled, false);
+  await assert.rejects(mutateExchange(db, "blake", form("set-santa-guess", { ...settings, confirm: "yes" }), origin), /organizer/i);
+  await assert.rejects(mutateExchange(db, "alex", form("set-santa-guess", settings), origin), /real names/i);
+  await mutateExchange(db, "alex", form("set-santa-guess", { ...settings, confirm: "yes" }), origin);
+  assert.equal((await season(db)).santaGuessEnabled, true);
+  assert.equal((await getExchange(db, "blake"))?.santaGuess, null);
+});
+
+test("the Santa reveal shows real pairings and scored guesses only to people in the draw and the organizer", async () => {
+  const { db } = await setup(3);
+  await mutateExchange(db, "alex", form("set-codename-mode", { ...drawReference(await season(db)), enabled: 1 }), origin);
+  await mutateExchange(db, "alex", await submission(db), origin);
+  const current = await season(db);
+  const reference = drawReference(current);
+  const guess = (guessedGiverId: string) => form("lock-santa-guess", { ...reference, guessedGiverId, confirm: "yes" });
+  const reveal = form("reveal-santa-guesses", { ...reference, confirm: "yes" });
+  const before = await getExchange(db, "blake");
+  assert.ok(before);
+  assert.equal(before.santaGuess, null);
+  await assert.rejects(mutateExchange(db, "alex", reveal, origin), /closed|unavailable/i);
+  await assert.rejects(mutateExchange(db, "blake", guess("unused-id"), origin), { status: 409 });
+  await mutateExchange(db, "alex", form("set-santa-guess", { ...reference, enabled: 1, confirm: "yes" }), origin);
+
+  const [alex, blake, casey] = await Promise.all(["alex", "blake", "casey"].map(id => getExchange(db, id)));
+  assert.ok(alex && blake && casey && alex.recipient && blake.recipient && casey.recipient);
+  const participants = [alex, blake, casey];
+  const giverFor = (recipientId: string) => participants.find(entry => entry.recipient?.id === recipientId)!;
+  const blakeGiver = giverFor(blake.self.id);
+  const wrongGiver = participants.find(entry => entry !== casey && entry !== giverFor(casey.self.id))!;
+  assert.deepEqual(blake.santaGuess, { status: "open", candidates: [alex.self, casey.self].map(({ id, name }) => ({ id, name })) });
+
+  await joinGroup(db, user("devon"), alex.group.code, "devon");
+  const late = await getExchange(db, "devon");
+  assert.ok(late);
+  assert.equal(late.santaGuess, null);
+  await assert.rejects(mutateExchange(db, "devon", guess(blakeGiver.self.id), origin), { status: 409 });
+  await assert.rejects(mutateExchange(db, "blake", guess(late.self.id), origin), { status: 409 });
+  await assert.rejects(mutateExchange(db, "blake", guess(blake.self.id), origin), /choose/i);
+  await assert.rejects(mutateExchange(db, "blake", form("lock-santa-guess", { ...reference, guessedGiverId: blakeGiver.self.id }), origin), /opened/i);
+  await mutateExchange(db, "blake", guess(blakeGiver.self.id), origin);
+  const otherCandidate = participants.find(entry => entry !== blake && entry !== blakeGiver)!;
+  await assert.rejects(mutateExchange(db, "blake", guess(otherCandidate.self.id), origin), { status: 409 });
+  assert.deepEqual((await getExchange(db, "blake"))?.santaGuess, { status: "locked", name: blakeGiver.self.name });
+  assert.deepEqual((await getExchange(db, "alex"))?.santaGuess, alex.santaGuess);
+  assert.deepEqual((await getExchange(db, "casey"))?.santaGuess, casey.santaGuess);
+  await mutateExchange(db, "casey", guess(wrongGiver.self.id), origin);
+  await assert.rejects(mutateExchange(db, "blake", reveal, origin), /organizer/i);
+
+  await complete(db);
+  const finalReference = drawReference(await season(db));
+  await assert.rejects(mutateExchange(db, "alex", form("reveal-santa-guesses", finalReference), origin), /real names/i);
+  await mutateExchange(db, "alex", form("reveal-santa-guesses", { ...finalReference, confirm: "yes" }), origin);
+  assert.deepEqual((await getExchange(db, "casey"))?.santaGuess, {
+    status: "revealed",
+    pairings: participants.map(({ self }, index) => ({
+      giverName: giverFor(self.id).self.name,
+      recipientName: self.name,
+      guessCorrect: [null, true, false][index],
+    })),
+  });
+  assert.equal((await getExchange(db, "devon"))?.santaGuess, null);
+  await assert.rejects(mutateExchange(db, "alex", guess(blake.self.id), origin), { status: 409 });
+
+  await mutateExchange(db, "alex", form("start-season", { year: current.year + 1 }), origin);
+  assert.equal((await season(db)).santaGuessEnabled, false);
+  assert.equal((await getExchange(db, "blake"))?.santaGuess, null);
+});
+
+test("Guess Your Santa waits until a scheduled draw is released", async () => {
+  const { db, sqlite } = await setup(2);
+  const releaseAt = Date.parse("2026-12-20T23:00:00Z") / 1000;
+  let now = releaseAt - 1;
+  sqlite.function("unixepoch", () => now);
+  await mutateExchange(db, "alex", form("set-santa-guess", { ...drawReference(await season(db)), enabled: 1, confirm: "yes" }), origin);
+  const draw = await submission(db);
+  draw.set("releaseTime", "2026-12-20T23:00");
+  await mutateExchange(db, "alex", draw, origin);
+
+  const reference = drawReference(await season(db));
+  const organizer = await getExchange(db, "alex");
+  assert.ok(organizer);
+  const guess = form("lock-santa-guess", { ...reference, guessedGiverId: organizer.self.id, confirm: "yes" });
+  const reveal = form("reveal-santa-guesses", { ...reference, confirm: "yes" });
+  assert.equal((await getExchange(db, "blake"))?.santaGuess, null);
+  await assert.rejects(mutateExchange(db, "blake", guess, origin), { status: 409 });
+  await assert.rejects(mutateExchange(db, "alex", reveal, origin), /closed|unavailable/i);
+
+  now = releaseAt;
+  await mutateExchange(db, "blake", guess, origin);
+  assert.deepEqual((await getExchange(db, "blake"))?.santaGuess, { status: "locked", name: "Alex" });
+});
+
+test("a locked Santa guess prevents a concurrent redraw from replacing the published pairings", async () => {
+  const fixture = await setup(3);
+  const { db } = fixture;
+  await mutateExchange(db, "alex", form("set-santa-guess", { ...drawReference(await season(db)), enabled: 1, confirm: "yes" }), origin);
+  await mutateExchange(db, "alex", await submission(db), origin);
+  const current = await season(db);
+  const alex = await getExchange(db, "alex");
+  assert.ok(alex);
+  const redraw = await submission(db, crypto.randomUUID(), "yes");
+
+  fixture.onBatch = async (statements) => {
+    if (!statements.some(({ sql }) => /INSERT INTO draws/i.test(sql))) return;
+    fixture.onBatch = undefined;
+    await mutateExchange(db, "blake", form("lock-santa-guess", {
+      ...drawReference(current), guessedGiverId: alex.self.id, confirm: "yes",
+    }), origin);
+  };
+  await assert.rejects(mutateExchange(db, "alex", redraw, origin), /changed|locked/i);
+  assert.equal(fixture.count("draws"), 1);
+  assert.equal((await season(db)).drawId, current.drawId);
+  assert.deepEqual((await getExchange(db, "blake"))?.santaGuess, { status: "locked", name: "Alex" });
+});
 
 test("four adults keep a private draw across a skipped year with bidirectional exclusions and directed repeat prevention", async () => {
   const fixture = await setup(4);
