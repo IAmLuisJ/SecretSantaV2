@@ -90,7 +90,8 @@ const latestRecipient = (viewerId: "?" | "m.id") => `
   SELECT a.recipient_id
   FROM memberships viewer
   JOIN seasons s ON s.group_id = viewer.group_id
-  JOIN assignments a ON a.draw_id = s.active_draw_id AND a.giver_id = viewer.id
+  JOIN released_draws d ON d.id = s.active_draw_id
+  JOIN assignments a ON a.draw_id = d.id AND a.giver_id = viewer.id
   WHERE viewer.id = ${viewerId}
     AND s.id = (SELECT id FROM seasons WHERE group_id = viewer.group_id ORDER BY year DESC LIMIT 1)
 `;

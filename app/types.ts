@@ -19,8 +19,10 @@ export type Exchange = {
     revision: number;
     drawId: string | null;
     drawRevision: number | null;
+    drawReleaseAt: number | null;
     codenameMode: boolean;
   } | null;
+  readAt: number;
   exclusions: { firstId: string; secondId: string }[];
   recipient: { name: string } | null;
   waitingCount: number;

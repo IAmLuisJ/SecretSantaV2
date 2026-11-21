@@ -1,4 +1,5 @@
 import { data, redirect } from "react-router";
+import type { ShouldRevalidateFunctionArgs } from "react-router";
 import type { Route } from "./+types/exchange";
 import { workerContext } from "../context";
 import { MembershipChanged } from "../server/actor";
@@ -17,6 +18,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const exchange = await getExchange(env.DB, user.id, params.groupId);
   if (!exchange) throw new Response("Exchange unavailable.", { status: 404 });
   return getDashboard(env.DB, exchange, origin, mailAvailable(env));
+}
+
+export function shouldRevalidate({ actionStatus, defaultShouldRevalidate }: ShouldRevalidateFunctionArgs) {
+  // A draw can open while the submitted form is being validated.
+  return actionStatus === 400 || defaultShouldRevalidate;
 }
 
 export async function action({ request, context, params }: Route.ActionArgs) {

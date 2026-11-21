@@ -745,6 +745,18 @@ details > p {
   font-size: .93rem;
 }
 
+.draw-party {
+  grid-template-rows: auto;
+}
+
+.draw-party .draw-countdown {
+  color: var(--cream);
+  font-size: clamp(1.2rem, 4.9vw, 2rem);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
 .recipient-reveal:not([open]) .when-open,
 .recipient-reveal[open] .when-closed,
 .recipient-reveal[open] .gift-illustration {
@@ -950,6 +962,10 @@ address {
 
 .organizer-box > .form-stack, .roster, .exclusions {
   margin-top: .6rem;
+}
+
+.draw-release-note {
+  margin-top: .75rem;
 }
 
 .roster li + li, .exclusions li + li {
