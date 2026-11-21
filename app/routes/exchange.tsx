@@ -20,9 +20,13 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   return getDashboard(env.DB, exchange, origin, mailAvailable(env));
 }
 
-export function shouldRevalidate({ actionStatus, defaultShouldRevalidate }: ShouldRevalidateFunctionArgs) {
+export function shouldRevalidate({ actionStatus, formData, defaultShouldRevalidate }: ShouldRevalidateFunctionArgs) {
   // A draw can open while the submitted form is being validated.
-  return actionStatus === 400 || defaultShouldRevalidate;
+  if (actionStatus === 400) return true;
+  const intent = formData?.get("intent");
+  if (actionStatus !== 409) return defaultShouldRevalidate;
+  return intent === "lock-santa-guess" || intent === "reveal-santa-guesses" || intent === "set-santa-guess"
+    || defaultShouldRevalidate;
 }
 
 export async function action({ request, context, params }: Route.ActionArgs) {
@@ -48,7 +52,8 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     if (error instanceof Response) throw error;
     if (error instanceof MembershipChanged) return data({ values: {}, error: error.message }, { status: 409 });
     if (error instanceof GiftError || error instanceof ExchangeError) {
-      return data({ values, error: error.message }, { status: 400 });
+      const status = error instanceof ExchangeError ? error.status : 400;
+      return data({ values: status === 409 ? {} : values, error: error.message }, { status });
     }
     console.error("Exchange action failed.");
     return data({ values, error: "We couldn’t save your changes. Try again." }, { status: 500 });

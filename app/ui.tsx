@@ -615,6 +615,98 @@ function SeasonFields({ season, includeDraw = false }: { season: Season; include
   );
 }
 
+function SantaGuessPanel({ season, game, values }: {
+  season: Season;
+  game: NonNullable<DashboardData["exchange"]["santaGuess"]>;
+  values: Values;
+}) {
+  return (
+    <section className="dashboard-section santa-guess" id="guess-your-santa" aria-labelledby="santa-guess-heading">
+      <h2 id="santa-guess-heading">{game.status === "revealed" ? `${season.year} Santa reveal` : "Guess Your Santa"}</h2>
+      {game.status === "open" && (
+        <>
+          <p>After you open your gift, take one guess. Your pick stays private until the reveal, when everyone in the draw can see the real-name pairings and who guessed correctly.</p>
+          <ActionForm intent="lock-santa-guess" className="form-stack">
+            <SeasonFields season={season} includeDraw />
+            <label>Who gave you your gift?
+              <select name="guessedGiverId" defaultValue={fieldsFor(values, "lock-santa-guess")?.guessedGiverId ?? ""} required>
+                <option value="">Choose an adult</option>
+                {game.candidates.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+              </select>
+            </label>
+            <label className="check-line">
+              <input name="confirm" type="checkbox" value="yes" required />
+              <span>I’ve opened my gift and I’m ready to lock in this guess.</span>
+            </label>
+            <Submit intent="lock-santa-guess">Lock in my guess</Submit>
+          </ActionForm>
+        </>
+      )}
+      {game.status === "locked" && (
+        <>
+          <p>Guess locked. You picked <strong>{game.name}</strong>.</p>
+          <p>Check back when your organizer starts the reveal.</p>
+        </>
+      )}
+      {game.status === "revealed" && (
+        <table className="santa-results" aria-label={`${season.year} Secret Santa pairings`}>
+          <thead>
+            <tr><th scope="col">Giver</th><th scope="col">Recipient</th><th scope="col">Recipient’s guess</th></tr>
+          </thead>
+          <tbody>
+            {game.pairings.map(({ giverName, recipientName, guessCorrect }, index) => (
+              <tr key={index}>
+                <td>{giverName}</td>
+                <td>{recipientName}</td>
+                <td>{guessCorrect === null ? "No guess" : guessCorrect ? <strong>Correct</strong> : "Incorrect"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+function SantaGuessControls({ season, drawPending }: { season: Season; drawPending: boolean }) {
+  if (season.santaGuessRevealed || (season.completed && !season.santaGuessEnabled)) return null;
+  return (
+    <div className="organizer-box santa-guess-controls">
+      <h3>Guess Your Santa</h3>
+      {season.santaGuessEnabled && season.drawId ? (
+        drawPending ? <p>Guessing opens when the draw is released.</p> : (
+          <ActionForm intent="reveal-santa-guesses" className="form-stack">
+            <SeasonFields season={season} includeDraw />
+            <p>Once everyone has had a chance to guess, share who gave to whom and who guessed correctly.</p>
+            <label className="check-line">
+              <input name="confirm" type="checkbox" value="yes" required />
+              <span>Share the real names and close guessing.</span>
+            </label>
+            <Submit intent="reveal-santa-guesses">Reveal Santas</Submit>
+          </ActionForm>
+        )
+      ) : (
+        <ActionForm key={`${season.id}-${season.santaGuessEnabled}`} intent="set-santa-guess" className="form-stack">
+          <SeasonFields season={season} includeDraw />
+          <input type="hidden" name="enabled" value={season.santaGuessEnabled ? "0" : "1"} />
+          {season.santaGuessEnabled ? <p>Guessing opens after the draw. Ask everyone to guess after opening their gift.</p> : (
+            <>
+              <p>Players guess using the real names on the draw roster. In a two-person exchange, the sole choice gives away the match. The reveal shares the real names behind every pairing, even when the draw uses codenames.</p>
+              <label className="check-line">
+                <input name="confirm" type="checkbox" value="yes" required />
+                <span>I understand the reveal shares real names.</span>
+              </label>
+            </>
+          )}
+          <Submit intent="set-santa-guess" appearance="button-secondary">
+            {season.santaGuessEnabled ? "Disable Guess Your Santa" : "Enable Guess Your Santa"}
+          </Submit>
+        </ActionForm>
+      )}
+    </div>
+  );
+}
+
 function DrawForm({ season, requestId, releaseTime }: { season: Season; requestId: string; releaseTime?: string }) {
   const [useDeviceTime, setUseDeviceTime] = useState(false);
   const timeInput = useRef<HTMLInputElement>(null);
@@ -656,6 +748,7 @@ function DrawForm({ season, requestId, releaseTime }: { season: Season; requestI
           <span>I understand everyone’s recipient can change.</span>
         </label>
       )}
+      {season.drawId && season.santaGuessEnabled && <p className="field-note">The draw becomes fixed after the first locked guess.</p>}
       <Submit intent="draw">{season.drawId ? "Redraw names" : "Draw names"}</Submit>
     </ActionForm>
   );
@@ -686,9 +779,11 @@ function Organizer({ data, values, resetValues, drawLocked }: {
       {mailFailures > 0 && (
         <p className="feedback feedback-warning">{mailFailures === 1 ? "1 group email couldn’t be delivered." : `${mailFailures} group emails couldn’t be delivered.`}</p>
       )}
-      {isOpen && changesPending && (
+      {isOpen && changesPending && !season?.santaGuessRevealed && (
         <p className="feedback feedback-warning">
-          Roster or exclusion changes are waiting for a redraw.{!drawLocked && " Published recipients are still available."}
+          {season?.santaGuessEnabled
+            ? "Roster or exclusion changes are pending. Guess Your Santa uses the published draw."
+            : <>Roster or exclusion changes are waiting for a redraw.{!drawLocked && " Published recipients are still available."}</>}
         </p>
       )}
       <div className="organizer-grid">
@@ -775,8 +870,12 @@ function Organizer({ data, values, resetValues, drawLocked }: {
                   </Submit>
                 </ActionForm>
               )}
-              <DrawForm key={`${season.id}-${season.revision}-${season.drawId}`} season={season} requestId={data.requestId}
-                releaseTime={fieldsFor(values, "draw")?.releaseTime} />
+              {season.santaGuessRevealed ? (
+                <p className="draw-release-note section-note">This draw is locked after the Santa reveal.</p>
+              ) : (
+                <DrawForm key={`${season.id}-${season.revision}-${season.drawId}`} season={season} requestId={data.requestId}
+                  releaseTime={fieldsFor(values, "draw")?.releaseTime} />
+              )}
               {drawLocked ? (
                 <p className="draw-release-note section-note">You can complete this exchange after matches open.</p>
               ) : season.drawId ? (
@@ -823,6 +922,7 @@ function Organizer({ data, values, resetValues, drawLocked }: {
           )}
         </div>
       </div>
+      {season && <SantaGuessControls season={season} drawPending={drawLocked} />}
       <details className="action-detail danger-detail" open={Boolean(fieldsFor(values, "delete-group")) || undefined}>
         <summary>Delete group</summary>
         <p>This permanently deletes the group, its exchanges, addresses, and wish lists.</p>
@@ -840,7 +940,7 @@ function Organizer({ data, values, resetValues, drawLocked }: {
 }
 
 export function Dashboard({ data, message, error, values: submitted }: DashboardProps) {
-  const { group, self, season, readAt } = data.exchange;
+  const { group, self, season, readAt, santaGuess } = data.exchange;
   const releaseAt = season?.drawReleaseAt;
   const pendingReleaseAt = releaseAt != null && releaseAt > readAt ? releaseAt : null;
   useDrawStatusRefresh(Boolean(season && !season.drawId), pendingReleaseAt !== null);
@@ -873,10 +973,14 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
         <Recipient data={data} pendingReleaseAt={pendingReleaseAt} />
         <nav className="dashboard-nav" aria-label="In this exchange">
           <a href="#wish-list">My wish list</a>
+          {santaGuess && <a href="#guess-your-santa">{santaGuess.status === "revealed" ? "Santa reveal" : "Guess Your Santa"}</a>}
           <a href="#little-ones">Little Ones</a>
           <a href="#invitations">Invitations</a>
           {organizer && <a href="#organizer">Organizer</a>}
         </nav>
+        {season?.drawId && santaGuess && (
+          <SantaGuessPanel key={`${season.drawId}-${santaGuess.status}`} season={season} game={santaGuess} values={values} />
+        )}
         <div className="dashboard-columns">
           <section className="dashboard-section" id="wish-list" aria-labelledby="wish-list-heading">
             <span className="section-icon"><Icon name="gift" /></span>
