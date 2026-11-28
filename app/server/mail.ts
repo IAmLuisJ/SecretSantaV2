@@ -11,6 +11,7 @@ type Mail = { to: string; subject: string; text: string };
 
 type ClaimedMail = {
   event_key: string;
+  kind: string;
   recipient: string;
   subject: string;
   body: string;
@@ -48,7 +49,7 @@ export function mailAvailable(env: Env, origin = env.APP_ORIGIN): boolean {
 export async function sendDirect(
   env: Env,
   mail: Mail,
-  options: { origin?: string; key?: string; sender?: string } = {},
+  options: { origin?: string; key?: string; sender?: string; unsubscribeUrl?: string } = {},
 ): Promise<string> {
   if (env.LOCAL_MAIL === "log" && options.origin && isLoopbackOrigin(options.origin)) {
     console.info("[local mail]", mail);
@@ -70,7 +71,13 @@ export async function sendDirect(
     response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers,
-      body: JSON.stringify({ from, to: [mail.to], subject: mail.subject, text: mail.text }),
+      body: JSON.stringify({
+        from, to: [mail.to], subject: mail.subject, text: mail.text,
+        ...(options.unsubscribeUrl ? { headers: {
+          "List-Unsubscribe": `<${options.unsubscribeUrl}>`,
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        } } : {}),
+      }),
       // Workers supports manual redirects. Never forward the Resend key to another URL.
       redirect: "manual",
       signal: AbortSignal.timeout(requestTimeoutMs),
@@ -126,14 +133,14 @@ export async function processOutbox(env: Env): Promise<void> {
           AND (lease_until IS NULL OR lease_until <= unixepoch())
         ORDER BY next_attempt_at, event_key LIMIT 1
       )
-      RETURNING event_key, recipient, subject, body, attempts, first_attempt_at, sender
+      RETURNING event_key, kind, recipient, subject, body, attempts, first_attempt_at, sender
     `).bind(lease, leaseSeconds, env.MAIL_FROM ?? null).first<ClaimedMail>();
     if (!job) return;
 
     const pending = "WHERE event_key = ? AND lease_token = ? AND status = 'pending'";
     const current = await DB.prepare(`
       SELECT CASE WHEN EXISTS (SELECT 1 FROM groups WHERE id = email_outbox.group_id)
-        AND (kind <> 'draw' OR draw_id = (
+        AND (kind NOT IN ('draw', 'wishlist-reminder') OR draw_id = (
           SELECT active_draw_id FROM seasons
           WHERE group_id = email_outbox.group_id ORDER BY year DESC LIMIT 1
         ))
@@ -143,7 +150,24 @@ export async function processOutbox(env: Env): Promise<void> {
     `).bind(job.event_key, lease).first<{ current: number; now: number }>();
     if (!current) continue;
 
-    if (!current.current) {
+    // Recheck reminders at delivery, including retries: the recipient may have
+    // added a wish, opted out, changed accounts, or finished their exchange.
+    const reminder = job.kind === "wishlist-reminder" ? await DB.prepare(`
+      SELECT e.unsubscribe_url AS unsubscribeUrl
+      FROM email_outbox e
+      JOIN memberships m ON m.id = e.reminder_member_id AND m.group_id = e.group_id
+      JOIN "user" u ON u.id = m.user_id AND u.email = e.recipient AND m.email = u.email
+      JOIN seasons s ON s.group_id = m.group_id AND s.active_draw_id = e.draw_id
+      JOIN draws d ON d.id = s.active_draw_id
+      JOIN assignments a ON a.draw_id = d.id AND a.recipient_id = m.id
+      WHERE e.event_key = ? AND e.lease_token = ? AND e.status = 'pending' AND e.lease_until > unixepoch()
+        AND s.completed = 0 AND u.emailVerified = 1 AND u.wishlist_reminders_enabled = 1
+        AND (d.release_at IS NULL OR d.release_at <= unixepoch())
+        AND s.id = (SELECT id FROM seasons WHERE group_id = s.group_id ORDER BY year DESC LIMIT 1)
+        AND NOT EXISTS (SELECT 1 FROM gift_items WHERE owner_id = m.id)
+    `).bind(job.event_key, lease).first<{ unsubscribeUrl: string }>() : null;
+
+    if (!current.current || (job.kind === "wishlist-reminder" && !reminder)) {
       await DB.prepare(`
         UPDATE email_outbox SET status = 'cancelled', lease_until = NULL, lease_token = NULL ${pending}
       `).bind(job.event_key, lease).run();
@@ -162,7 +186,7 @@ export async function processOutbox(env: Env): Promise<void> {
           to: job.recipient,
           subject: job.subject,
           text: job.body,
-        }, { key, origin: env.APP_ORIGIN, sender: job.sender ?? undefined });
+        }, { key, origin: env.APP_ORIGIN, sender: job.sender ?? undefined, unsubscribeUrl: reminder?.unsubscribeUrl });
       } catch (error) {
         failure = error instanceof DeliveryError ? error : new DeliveryError("delivery_error", true);
       }

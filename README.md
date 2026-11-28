@@ -22,6 +22,14 @@ Email sign-in uses a six-digit code when mail delivery is configured and email-c
 
 Open **Account** to change your sign-in email by confirming a code sent to the new address. You can also merge a second account you control into your signed-in account. Authenticate the other account with its password or, when email-code sign-in is available, a code sent to its verified address. The merge preserves its exchanges, organizer roles, wishes, and draw history, then closes the other account. The two accounts must belong to different groups.
 
+## Wishlist reminders
+
+The existing scheduled Worker queues a reminder one day after a draw is released, then every three days while a matched adult’s wishlist is empty. Only verified email addresses receive reminders. Adding a wish, completing an exchange, or replacing its draw prevents queued reminders from being sent.
+
+Each reminder includes an opt-out link that works without signing in and supports email clients’ one-click unsubscribe. Opening the link displays a confirmation; only a POST opts out. Users can also open **Manage wishlist email reminders** from their wishlist to turn reminders off or back on for all their exchanges. The preference only affects wishlist reminders.
+
+Apply migration `0010_wishlist_reminders.sql` before deploying the updated Worker. Existing draws receive a one-day grace period after migration. Reminders reuse the existing Resend configuration and two-minute scheduled trigger.
+
 ## Deployment
 
 The React Router app runs on a Cloudflare Worker. D1 stores exchange data, a private R2 bucket stores wish photos, and Resend delivers email. The Worker processes queued mail and cleans up unused photos every two minutes.
