@@ -7,4 +7,6 @@ export type Env = {
   MAIL_FROM?: string;
   EMAIL_SIGN_IN_ENABLED?: string;
   LOCAL_MAIL?: string;
+  BUILD_COMMIT?: string;
+  WORKER_VERSION?: WorkerVersionMetadata;
 };

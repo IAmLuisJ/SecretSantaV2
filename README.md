@@ -60,22 +60,39 @@ Create a GitHub Actions environment named `production`, restrict deployments to 
 
 Pull requests run TypeScript, Vitest, and Playwright. Playwright tests email and password flows in Chromium and WebKit using mobile device profiles. Failed browser runs upload reports with traces. Pushes to `main`, including merges, rerun the checks. The deploy job then builds and validates the production Worker, checks that the revision is still at the tip of `main`, applies pending D1 migrations, and deploys. [CI/CD workflow](.github/workflows/ci-cd.yml)
 
+Make changes through a pull request against `main` and let CI/CD release the merged commit. The production build records `SANTA_BUILD_COMMIT` from the workflow's commit SHA. After deployment, CI polls the public `/heartbeat` endpoint and requires that exact commit and valid Cloudflare version metadata before declaring the release successful.
+
 To deploy through checked pull requests, configure a `main` branch ruleset that requires pull requests and the **Vitest**, **Playwright (email)**, and **Playwright (password)** checks.
 
-### Manual staging deploy
+### Heartbeat
 
-After `npm ci`, export the staging variables from the table and the staging `CLOUDFLARE_API_TOKEN` in your shell. Put `BETTER_AUTH_SECRET` and `RESEND_API_KEY` in a private JSON or dotenv file outside the checkout. Build and validate before applying the migrations and deploying the same build.
+`GET /heartbeat` returns uncached JSON with `status`, the source `commit`, the Cloudflare `version` ID, and that version's creation `timestamp`. It works without signing in and reads only release metadata. HEAD requests are supported.
 
 ```sh
+curl --fail --silent "$SANTA_APP_ORIGIN/heartbeat"
+node --experimental-strip-types scripts/verify-deployment.ts "$SANTA_APP_ORIGIN" "$SANTA_BUILD_COMMIT"
+```
+
+The verifier rejects an older healthy release whose commit does not match. It makes at most twelve attempts, five seconds apart, with a five-second timeout per request. Local development reports `commit: "local"`; staging and production builds require a full commit SHA in `SANTA_BUILD_COMMIT`.
+
+### Direct deployment fallback
+
+Use direct deployment when the CI/CD release fails or is unavailable. Investigate and record the reason, keep the source changes in a pull request, and run the required checks locally. Build from a committed revision, preserve the existing production secrets, and verify the heartbeat after release.
+
+For staging, after `npm ci`, export the staging variables from the table and the staging `CLOUDFLARE_API_TOKEN` in your shell. Put `BETTER_AUTH_SECRET` and `RESEND_API_KEY` in a private JSON or dotenv file outside the checkout. Build and validate before applying the migrations and deploying the same build.
+
+```sh
+export SANTA_BUILD_COMMIT="$(git rev-parse HEAD)"
 npx vite build --mode staging &&
   npx cf deploy --prebuilt --mode staging --dry-run &&
   npx cf d1 migrations apply "$SANTA_D1_ID" --dir migrations &&
-  npx cf deploy --prebuilt --mode staging --secrets-file /absolute/path/to/staging-secrets.env
+  npx cf deploy --prebuilt --mode staging --secrets-file /absolute/path/to/staging-secrets.env &&
+  node --experimental-strip-types scripts/verify-deployment.ts "$SANTA_APP_ORIGIN" "$SANTA_BUILD_COMMIT"
 ```
 
 The production workflow uses email-code sign-in by default. Set `SANTA_EMAIL_SIGN_IN_ENABLED=false` when running a manual build to use password registration and sign-in. With Resend configured, the Worker can still send email invitations and verify changes to sign-in addresses.
 
-Run the invite, sign-in, wish upload, draw, and completion flows with controlled staging accounts. Check real email delivery and Worker CPU usage, and try the primary flow on iOS Safari and Android Chrome. For a manual production deploy, use the production resources and `production` mode for both build and deploy.
+Run the invite, sign-in, wish upload, draw, and completion flows with controlled staging accounts. Check real email delivery and Worker CPU usage, and try the primary flow on iOS Safari and Android Chrome. For a production fallback, use the production resources and `production` mode for both build and deploy.
 
 ### Upgrading from the original Secret Santa
 
