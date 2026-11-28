@@ -11,12 +11,15 @@ const png = Buffer.from(
 );
 
 test.beforeEach(async ({ request }) => {
-  // Keep the loopback sign-in quota independent across test cases.
+  // Every browser case shares loopback, so keep sign-in and invitation
+  // quotas independent across cases and mobile browser projects.
   const database = "00000000-0000-4000-8000-000000000001";
-  const response = await request.post(`/cdn-cgi/local/explorer/api/d1/database/${database}/raw`, {
-    data: { sql: "DELETE FROM auth_rate_limits" },
-  });
-  await expect(response).toBeOK();
+  for (const table of ["auth_rate_limits", "invite_lookup_limits"]) {
+    const response = await request.post(`/cdn-cgi/local/explorer/api/d1/database/${database}/raw`, {
+      data: { sql: `DELETE FROM ${table}` },
+    });
+    await expect(response).toBeOK();
+  }
 });
 
 async function signIn(page: Page, url: string, email: string) {
@@ -108,7 +111,7 @@ test("merging accounts brings both exchanges and the other account’s wishes in
   }
 });
 
-async function addressAndWish(page: Page, name: string) {
+async function addressAndWish(page: Page, name: string, scope = "shared") {
   await page.getByText("Add a mailing address", { exact: true }).click();
   await page.getByLabel("First name").fill(name);
   await page.getByLabel("Last name").fill("Example");
@@ -121,6 +124,7 @@ async function addressAndWish(page: Page, name: string) {
   const wishes = page.locator("#wish-list");
   await wishes.getByText("Add a wish", { exact: true }).click();
   await wishes.getByLabel("Item name").fill(`${name} wish`);
+  await wishes.getByLabel("Show this wish in").selectOption(scope);
   await wishes.getByLabel("Product link").fill("example.com/gift");
   await wishes.locator('input[type="file"]').setInputFiles({ name: "wish.png", mimeType: "image/png", buffer: png });
   await wishes.getByRole("button", { name: "Add wish" }).click();
@@ -242,7 +246,7 @@ test("one account can organize one group and join another", async ({ page, brows
   await expect(account.getByRole("button", { name: "Sign out" })).toBeVisible();
   const family = page.url();
   const familyMember = await page.locator('input[name="actingMembershipId"]').first().inputValue();
-  await addressAndWish(page, "Family");
+  await addressAndWish(page, "Family", "exchange");
 
   const context = await browser.newContext({ baseURL: origin });
   try {
@@ -303,6 +307,109 @@ function submittedFields(button: Locator) {
   return button.evaluate(element =>
     Object.fromEntries(Array.from(new FormData((element as HTMLButtonElement).form!), ([key, value]) => [key, String(value)])));
 }
+
+test("shared adult and Little One wishes synchronize purchases across exchanges with per-wish privacy", async ({ page, browser }, testInfo) => {
+  await signIn(page, "/", `shared-owner-${randomUUID()}@example.test`);
+  await page.getByLabel("Group name").fill("Shared family");
+  await page.getByLabel("Your display name").fill("Alex");
+  await page.getByRole("button", { name: "Create group" }).click();
+  await expect(page).toHaveURL(/\/exchange\/[a-f0-9-]{36}$/);
+  const family = page.url();
+  const familyInvite = await page.getByLabel("Invitation link").inputValue();
+  await addressAndWish(page, "Shared");
+
+  async function addWish(section: Locator, name: string, scope = "shared") {
+    const editor = section.locator(".wish-add");
+    if (!await editor.getByLabel("Item name").isVisible()) await editor.locator("summary").click();
+    await editor.getByLabel("Item name").fill(name);
+    await editor.getByLabel("Show this wish in").selectOption(scope);
+    await editor.getByRole("button", { name: "Add wish", exact: true }).click();
+    await expect(section.getByText(name, { exact: true })).toBeVisible();
+  }
+  await addWish(page.locator("#wish-list"), "Family-only scarf", "exchange");
+  const littleOnes = page.locator("#little-ones");
+  await littleOnes.getByText("Add a child", { exact: true }).click();
+  await littleOnes.getByLabel("Display name", { exact: true }).fill("Robin");
+  await littleOnes.getByLabel("Age", { exact: true }).fill("6");
+  await littleOnes.getByRole("button", { name: "Add child", exact: true }).click();
+  const robin = littleOnes.locator(".child").filter({ has: page.getByRole("heading", { name: "Robin", exact: true }) });
+  const childId = (await robin.getByRole("heading", { name: "Robin", exact: true }).getAttribute("id"))!.slice("child-name-".length);
+  await addWish(robin, "Shared train");
+  await addWish(robin, "Family-only puzzle", "exchange");
+
+  await page.goto("/?new=1");
+  await page.getByLabel("Group name").fill("Shared friends");
+  await page.getByLabel("Your display name").fill("Alex");
+  await page.getByRole("button", { name: "Create group" }).click();
+  await expect(page).toHaveURL(/\/exchange\/[a-f0-9-]{36}$/);
+  const friends = page.url();
+  const friendsInvite = await page.getByLabel("Invitation link").inputValue();
+  await expect(page.locator("#wish-list").getByText("Shared wish", { exact: true })).toBeVisible();
+  await expect(page.locator("#wish-list").getByText("Family-only scarf", { exact: true })).toHaveCount(0);
+  await littleOnes.getByText("Use an existing Little One", { exact: true }).click();
+  await littleOnes.getByRole("combobox", { name: "Little One", exact: true }).selectOption(childId);
+  await littleOnes.getByRole("button", { name: "Use this Little One", exact: true }).click();
+  await expect(robin.getByText("Shared train", { exact: true })).toBeVisible();
+  await expect(robin.getByText("Family-only puzzle", { exact: true })).toHaveCount(0);
+
+  const context = await browser.newContext({ baseURL: origin });
+  try {
+    const giver = await context.newPage();
+    await signIn(giver, familyInvite, `shared-giver-${randomUUID()}@example.test`);
+    await giver.getByLabel("Your display name").fill("Blake");
+    await giver.getByRole("button", { name: "Join group" }).click();
+    await expect(giver).toHaveURL(family);
+    await giver.goto(friendsInvite);
+    await giver.getByLabel("Your display name").fill("Blake");
+    await giver.getByRole("button", { name: "Join group" }).click();
+    await expect(giver).toHaveURL(friends);
+    await page.reload();
+    await page.getByRole("button", { name: "Draw names", exact: true }).click();
+    await expect(page.getByText("Unwrap match", { exact: true })).toBeVisible();
+    await page.goto(family);
+    await page.getByRole("button", { name: "Draw names", exact: true }).click();
+    await expect(page.getByText("Unwrap match", { exact: true })).toBeVisible();
+
+    await giver.goto(family);
+    await giver.getByText("Unwrap match", { exact: true }).click();
+    const adultWish = giver.locator("#recipient .wish-card").filter({ hasText: "Shared wish" });
+    await adultWish.getByRole("button", { name: /Mark as purchased.*Shared wish/ }).click();
+    await expect(adultWish.getByText("Purchased", { exact: true })).toBeVisible();
+    const childWish = giver.locator("#little-ones .wish-card").filter({ hasText: "Shared train" });
+    await childWish.getByRole("button", { name: /Mark as purchased.*Shared train/ }).click();
+    await expect(childWish.getByText("Purchased", { exact: true })).toBeVisible();
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(robin.locator(".wish-card").filter({ hasText: "Shared train" }).getByText("Purchased", { exact: true })).toBeVisible();
+    await giver.goto(friends);
+    await giver.getByText("Unwrap match", { exact: true }).click();
+    await expect(adultWish.getByText("Purchased", { exact: true })).toBeVisible();
+    await expect(childWish.getByText("Purchased", { exact: true })).toBeVisible();
+    await expect(giver.getByText("Family-only scarf", { exact: true })).toHaveCount(0);
+    await expect(giver.getByText("Family-only puzzle", { exact: true })).toHaveCount(0);
+
+    await page.goto(friends);
+    const ownWish = page.locator("#wish-list .wish-card").filter({ hasText: "Shared wish" });
+    await expect(ownWish.getByText("Purchased", { exact: true })).toHaveCount(0);
+    await expect(ownWish.getByRole("button", { name: /purchased|Undo purchase/ })).toHaveCount(0);
+    await ownWish.locator(".wish-sharing-editor > summary").click();
+    await ownWish.getByLabel("Show this wish in").selectOption("exchange");
+    await ownWish.getByRole("button", { name: "Save sharing", exact: true }).click();
+    await expect(ownWish.getByText("Only this exchange", { exact: true }).first()).toBeVisible();
+    await giver.reload();
+    await giver.getByText("Unwrap match", { exact: true }).click();
+    await expect(adultWish.getByText("Purchased", { exact: true })).toBeVisible();
+    await giver.goto(family);
+    await giver.getByText("Unwrap match", { exact: true }).click();
+    await expect(adultWish).toHaveCount(0);
+    await expect(giver.getByText("Family-only scarf", { exact: true })).toBeVisible();
+
+    await page.setViewportSize({ width: 320, height: 780 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath("shared-wishlists.png"), fullPage: true });
+  } finally {
+    await context.close();
+  }
+});
 
 test("codename mode keeps identities private while matches exchange Elf Mail", async ({ page, browser }) => {
   const organizerName = "Real Organizer Name";
@@ -492,7 +599,7 @@ test("Guess Your Santa keeps a participant’s guess private until the organizer
   }
 });
 
-test("a mobile group runs two private annual exchanges and shares Little Ones gifts", async ({ page, browser }) => {
+test("a mobile group runs two private annual exchanges and shares Little Ones gifts", async ({ page, browser }, testInfo) => {
   const slug = randomUUID().slice(0, 8);
   const email = (name: string) => `${name.toLowerCase()}-${slug}@example.test`;
   const people = ["Alex", "Bailey", "Casey", "Drew"];
@@ -517,7 +624,15 @@ test("a mobile group runs two private annual exchanges and shares Little Ones gi
       pages.set(name, participant);
       await signIn(participant, invite, email(name));
       await participant.getByLabel("Your display name").fill(name);
-      await participant.getByRole("button", { name: "Join group" }).click();
+      try {
+        await participant.getByRole("button", { name: "Join group" }).click();
+      } catch (error) {
+        await testInfo.attach("join-state", {
+          body: `${participant.url()}\n${await participant.locator("main").innerText()}`,
+          contentType: "text/plain",
+        });
+        throw error;
+      }
       await expect(participant).toHaveURL(/\/exchange\/[a-f0-9-]{36}$/);
       await expect(participant.getByRole("heading", { name: "Organizer tools" })).toHaveCount(0);
     }
@@ -591,7 +706,9 @@ test("a mobile group runs two private annual exchanges and shares Little Ones gi
         const wish = recipient.locator(".wish-card");
         await expect(wish).toHaveCount(1);
         await expect(wish.getByRole("link", { name: "View product" })).toBeVisible();
-        await expect(wish.getByRole("button")).toHaveCount(0);
+        await expect(wish.getByRole("button", { name: /Mark as purchased/ })).toBeVisible();
+        await expect(wish.getByRole("button", { name: /Remove wish/ })).toHaveCount(0);
+        await expect(wish.getByText("Change sharing")).toHaveCount(0);
         const photo = await recipient.locator("img").getAttribute("src");
         expect((await participant.request.get(photo!)).status()).toBe(200);
         if (giver === "Alex") {

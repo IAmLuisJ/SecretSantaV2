@@ -7,7 +7,8 @@ A mobile-first gift exchange for friends and family. Create a group, invite your
 ## How an exchange works
 
 - Share an invitation link or group code. One account can organize some groups and participate in others. Switch between them in **My exchanges**.
-- Maintain a wish list with links and photos, and add a mailing address if you want your assigned giver to have it. **Little Ones** gives the group a shared list for children's wishes and lets members track purchases separately from the adult draw.
+- Maintain a wish list with links and photos. New wishes default to **All my exchanges**, so you keep one list and a purchase marked by one assigned giver is reflected for your other givers. Choose **Only this exchange** for a private wish, or use **Change sharing** on an existing wish. Your own adult wish list never shows purchase status. Mailing addresses remain optional and specific to each exchange.
+- **Little Ones** can reuse the same child and shared wishes across exchanges. In another exchange, select **Use an existing Little One** and choose a child whose list you manage. The account that adds a child manages their shared wishes; other group members can contribute exchange-specific wishes and mark visible gifts purchased. Shared purchases update in every linked exchange.
 - The organizer sets the adult roster and can block pairs in both directions. Each adult on the roster gives and receives once. The draw rules exclude self-matches and each giver's recipient from the last completed exchange.
 - Publish matches immediately or set a **Draw Party** release time. The dashboard counts down and keeps match details private until release. Each participant can then select **Unwrap match** to see their own recipient and the recipient's wishes.
 - Enable **codename mode** before the first draw to show nicknames for matches and hide mailing addresses. Participants can label gifts with their match's codename.
@@ -15,6 +16,10 @@ A mobile-first gift exchange for friends and family. Create a group, invite your
 - **Guess Your Santa** is an optional game for each season. Once the draw is released, participants can lock one private guess after opening their gift. Redraws are allowed until the first guess is locked or the organizer reveals the pairings. **Reveal Santas** closes guessing and shares the real-name pairings and guess outcomes with participants, even in codename mode.
 
 After the draw is released, the organizer can complete the exchange and start a later season in the same group. The next roster starts with the adults from the last completed draw and can be edited before drawing again.
+
+Existing wishes remain **Only this exchange** after upgrading. For a Little One created before sharing was available, an existing group member can select **Use this list in other exchanges** → **Manage shared list**, then choose which wishes to share and reuse the child elsewhere. Children are linked explicitly, never by matching names. Separate historical child records remain separate lists. Shared wishes and managed children survive deletion of their original group; exchange-specific wishes are deleted with that group. Dashboards refresh shared availability when you return to the page.
+
+Apply migration `0011_shared_wishlists.sql` before deploying this version. It preserves existing wish IDs, photos, purchase states, and exchange scopes while moving adult ownership to accounts and linking Little Ones to their exchanges.
 
 ## Sign-in and account settings
 

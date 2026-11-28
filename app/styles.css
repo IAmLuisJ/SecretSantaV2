@@ -1331,6 +1331,49 @@ address {
   color: var(--cranberry);
 }
 
+.wish-sharing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .25rem .65rem;
+  padding: 0 .85rem .7rem;
+  font-size: .76rem;
+}
+
+.wish-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  color: var(--muted);
+}
+
+.wish-scope svg {
+  width: .9rem;
+  height: .9rem;
+  flex: none;
+}
+
+.wish-sharing-editor {
+  min-width: 0;
+}
+
+.wish-sharing-editor[open] {
+  flex-basis: 100%;
+}
+
+.wish-sharing-editor > summary {
+  min-height: 2.75rem;
+  align-content: center;
+  color: var(--evergreen);
+  text-decoration: underline;
+  text-underline-offset: .18em;
+}
+
+.wish-sharing-editor > .form-stack {
+  padding-block: .35rem;
+}
+
 .wish-card-footer {
   display: flex;
   flex-wrap: wrap;

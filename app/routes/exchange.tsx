@@ -19,11 +19,16 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   if (!user) return redirect(`/?next=${encodeURIComponent(exchangePath(params.groupId))}`);
   const exchange = await getExchange(env.DB, user.id, params.groupId);
   if (!exchange) throw new Response("Exchange unavailable.", { status: 404 });
-  const [dashboard, elfMail] = await Promise.all([
-    getDashboard(env.DB, exchange, origin, mailAvailable(env)),
-    getElfMail(env.DB, exchange),
-  ]);
-  return { ...dashboard, elfMail };
+  try {
+    const [dashboard, elfMail] = await Promise.all([
+      getDashboard(env.DB, exchange, origin, user.id, mailAvailable(env)),
+      getElfMail(env.DB, exchange),
+    ]);
+    return { ...dashboard, elfMail };
+  } catch (error) {
+    if (error instanceof MembershipChanged) throw new Response("Exchange unavailable.", { status: 404 });
+    throw error;
+  }
 }
 
 export function shouldRevalidate({ actionStatus, formData, defaultShouldRevalidate }: ShouldRevalidateFunctionArgs) {

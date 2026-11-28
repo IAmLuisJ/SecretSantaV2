@@ -183,10 +183,16 @@ async function mergeAccounts(db: D1Database, actor: AccountSession, other: { id:
   const bindings = [...sessionBindings(actor), other.id, other.email,
     ...(other.passwordHash === undefined ? [] : [other.passwordHash]), ...ids];
   // Keep the membership IDs that drawings, addresses, and wish lists already reference.
-  const [, , merged] = await db.batch([
+  const [, , , , merged] = await db.batch([
     redirectPendingMail(db, other.id, actor.user.email, actor.user.emailVerified, guard, bindings),
     db.prepare(`UPDATE memberships SET user_id = ?, email = ? WHERE user_id = ? AND ${guard}`)
       .bind(actor.user.id, actor.user.email, other.id, ...bindings),
+    // Exchange-specific wishes follow the membership's ON UPDATE CASCADE.
+    // Shared wishes and child management belong directly to the account.
+    db.prepare(`UPDATE gift_items SET owner_id = ? WHERE owner_id = ? AND ${guard}`)
+      .bind(actor.user.id, other.id, ...bindings),
+    db.prepare(`UPDATE children SET manager_id = ? WHERE manager_id = ? AND ${guard}`)
+      .bind(actor.user.id, other.id, ...bindings),
     db.prepare(`DELETE FROM "user" WHERE id = ? AND ${guard}`).bind(other.id, ...bindings),
   ]);
   if (merged.meta.changes) return;

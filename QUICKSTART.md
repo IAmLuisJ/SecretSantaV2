@@ -31,6 +31,14 @@ To try a countdown, set a future **Draw Party release time** in your browser's l
 
 Use **My exchanges** in the header to switch groups and **Account** to manage your sign-in.
 
+## Try a shared wish list
+
+1. Add a wish under **My wish list**, keeping **Show this wish in** set to **All my exchanges**. Create or join another exchange with the same account: the wish appears there too. Select **Only this exchange** to keep an individual wish in one group.
+2. After each exchange's draw is released, an assigned giver can mark the shared wish purchased. Other assigned givers see the same status; the wish's owner does not see it. Open **Change sharing** on your own wish to change its scope later.
+3. Add a child under **Little Ones** and add a shared wish for them. In another exchange, select **Use an existing Little One**, choose that child, and select **Use this Little One**. Marking the shared wish purchased updates it in both exchanges. Wishes marked **Only this exchange** stay with their group.
+
+Wishes that existed before the sharing upgrade stay exchange-specific until explicitly shared. For older Little Ones, use **Use this list in other exchanges** → **Manage shared list** first to manage sharing and make the child available in your other exchanges.
+
 ## Try password sign-in
 
 Stop the dev server and restart it with email-code sign-in disabled.
