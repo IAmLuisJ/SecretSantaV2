@@ -61,7 +61,7 @@ function afterSignIn(request: Request, response: Response) {
   const inviteCode = searchParams.get("code");
   const next = searchParams.get("next") ?? "";
   const destination = inviteCode ? `/join?code=${encodeURIComponent(inviteCode)}`
-    : /^\/exchange\/[a-f0-9-]{36}$/i.test(next) ? next : "/";
+    : next === "/wishlist-reminders" || /^\/exchange\/[a-f0-9-]{36}$/i.test(next) ? next : "/";
   return redirect(destination, { status: 303, headers: authCookies(response) });
 }
 

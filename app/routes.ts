@@ -7,6 +7,8 @@ export default [
   route("account", "routes/account.tsx"),
   route("exchange", "routes/exchange-index.ts"),
   route("exchange/:groupId", "routes/exchange.tsx"),
+  route("wishlist-reminders", "routes/wishlist-reminders.tsx"),
+  route("wishlist-reminders/unsubscribe", "routes/wishlist-reminders-unsubscribe.tsx"),
   route("photos/:id", "routes/photo.ts"),
   route("expired-invite", "routes/expired.tsx"),
 ] satisfies RouteConfig;

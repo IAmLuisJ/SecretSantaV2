@@ -1214,6 +1214,7 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
                 <WishList items={data.items} mode="adult" empty="Add a wish to give your Secret Santa an idea." />
                 <AddWish values={values} resetValues={resetValues} />
                 <AddressEditor address={data.address} values={values} resetValues={resetValues} />
+                <p className="section-note"><Link to="/wishlist-reminders">Manage wishlist email reminders</Link></p>
               </section>
               <LittleOnes children={data.children} values={values} resetValues={resetValues} />
             </div>
