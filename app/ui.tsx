@@ -27,7 +27,7 @@ type DashboardProps = {
   values: Values;
 };
 
-type IconName = "arrow" | "gift" | "share" | "copy" | "facebook" | "pin" | "check" | "users" | "mail";
+type IconName = "arrow" | "gift" | "share" | "copy" | "facebook" | "pin" | "check" | "users" | "mail" | "plus" | "undo" | "trash";
 
 function Icon({ name }: { name: IconName }) {
   const shapes: Record<IconName, ReactNode> = {
@@ -39,6 +39,9 @@ function Icon({ name }: { name: IconName }) {
     pin: <><path d="M19 10c0 5-7 11-7 11S5 15 5 10a7 7 0 0 1 14 0Z" /><circle cx="12" cy="10" r="2.5" /></>,
     check: <path d="m5 12 4 4L19 6" />,
     users: <><circle cx="9" cy="8" r="3" /><path d="M3 20v-2a6 6 0 0 1 12 0v2m2-15a3 3 0 0 1 0 6m1 3a5 5 0 0 1 3 4v2" /></>,
+    plus: <path d="M12 5v14M5 12h14" />,
+    undo: <><path d="M9 4 4 9l5 5M4 9h10a6 6 0 0 1 0 12h-2" /></>,
+    trash: <><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" /></>,
     mail: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3.5 7 8.5 6 8.5-6" /></>,
   };
   return (
@@ -344,43 +347,14 @@ function fieldsFor(values: Values | undefined, intent: string) {
 
 function WishList({ items, mode, empty }: {
   items: GiftItem[];
-  mode: "adult" | "child" | "recipient";
+  mode: "adult" | "recipient";
   empty: string;
 }) {
   if (items.length === 0) return <p className="empty-line">{empty}</p>;
 
   return (
-    <ul className="wish-list">
-      {items.map(item => (
-        <li key={item.id} className="wish">
-          {item.photoUrl && <img className="wish-photo" src={item.photoUrl} alt={item.name} loading="lazy" />}
-          <div className="wish-content">
-            <div className="wish-title">
-              <p>{item.name}</p>
-              {mode === "child" && item.purchased && <span className="tag"><Icon name="check" /> Purchased</span>}
-            </div>
-            {item.description && <p className="multiline">{item.description}</p>}
-            {item.url && <a className="product-link" href={item.url} target="_blank" rel="noreferrer">View product <Icon name="arrow" /></a>}
-            {mode !== "recipient" && (
-              <div className="button-row">
-                {mode === "child" && (
-                  <ActionForm intent="set-purchased">
-                    <input type="hidden" name="itemId" value={item.id} />
-                    <input type="hidden" name="purchased" value={item.purchased ? "no" : "yes"} />
-                    <Submit intent="set-purchased" appearance="button-secondary">
-                      {item.purchased ? "Mark as unpurchased" : "Mark as purchased"}
-                    </Submit>
-                  </ActionForm>
-                )}
-                <ActionForm intent="delete-item">
-                  <input type="hidden" name="itemId" value={item.id} />
-                  <Submit intent="delete-item" appearance="button-quiet">Remove wish</Submit>
-                </ActionForm>
-              </div>
-            )}
-          </div>
-        </li>
-      ))}
+    <ul className="wish-list" aria-label={mode === "adult" ? "Your wishes" : "Your recipient’s wishes"}>
+      {items.map(item => <WishCard key={item.id} item={item} mode={mode} />)}
     </ul>
   );
 }
@@ -391,8 +365,8 @@ function AddWish({ values, resetValues, childId }: { values: Values; resetValues
   const saved = fieldsFor(resetValues, "add-item");
   const resetOn = (saved?.childId || undefined) === childId ? saved : undefined;
   return (
-    <details className="action-detail" open={Boolean(fields) || undefined}>
-      <summary>Add a wish</summary>
+    <details className="action-detail wish-add" open={Boolean(fields) || undefined}>
+      <summary><Icon name="plus" />Add a wish</summary>
       <ActionForm intent="add-item" upload className="form-stack" resetOn={resetOn}>
         {childId && <input type="hidden" name="childId" value={childId} />}
         <label>Item name
@@ -702,21 +676,134 @@ function Recipient({ data, values, resetValues, pendingReleaseAt }: Pick<Dashboa
   );
 }
 
+function WishCard({ item, mode }: { item: GiftItem; mode: "adult" | "child" | "recipient" }) {
+  const purchased = mode === "child" && item.purchased;
+  return (
+    <li className={`wish-card${purchased ? " is-purchased" : ""}`}>
+      <div className="wish-card-main">
+        <div className="wish-card-image">
+          {item.photoUrl
+            ? <img src={item.photoUrl} alt={item.name} loading="lazy" />
+            : <Icon name="gift" />}
+        </div>
+        <div className="wish-content">
+          <p className="wish-card-name">{item.name}</p>
+          {item.description && <p className="wish-card-description multiline">{item.description}</p>}
+          {item.url && <a className="product-link" href={item.url} target="_blank" rel="noreferrer">View product <Icon name="arrow" /></a>}
+        </div>
+        {mode !== "recipient" && <ActionForm intent="delete-item" className="wish-card-remove">
+          <input type="hidden" name="itemId" value={item.id} />
+          <Submit intent="delete-item" appearance="button-quiet">
+            <Icon name="trash" /><span className="visually-hidden">Remove wish: {item.name}</span>
+          </Submit>
+        </ActionForm>}
+      </div>
+      {mode === "child" && <div className="wish-card-footer">
+        <span className="wish-card-status">
+          {purchased && <span className="wish-card-status-icon"><Icon name="check" /></span>}
+          {purchased ? "Purchased" : "Available"}
+        </span>
+        <ActionForm intent="set-purchased">
+          <input type="hidden" name="itemId" value={item.id} />
+          <input type="hidden" name="purchased" value={purchased ? "no" : "yes"} />
+          <Submit intent="set-purchased" appearance={purchased ? "button-quiet" : ""}>
+            <Icon name={purchased ? "undo" : "check"} />
+            {purchased ? "Undo" : "Mark as purchased"}
+            <span className="visually-hidden">{purchased ? " purchase" : ""}: {item.name}</span>
+          </Submit>
+        </ActionForm>
+      </div>}
+    </li>
+  );
+}
+
+function ChildWishList({ child, values, resetValues }: { child: DashboardData["children"][number]; values: Values; resetValues?: Values }) {
+  const [filter, setFilter] = useState<"all" | "available" | "purchased">("all");
+  const { state } = useNavigation();
+  const activeFilter = useRef<HTMLButtonElement>(null);
+  const purchaseSubmitted = useRef(false);
+  useEffect(() => {
+    if (state !== "idle" || !purchaseSubmitted.current) return;
+    purchaseSubmitted.current = false;
+    if (resetValues?.intent === "set-purchased") activeFilter.current?.focus({ preventScroll: true });
+  }, [state, child.items, resetValues]);
+  const purchased = child.items.filter(item => item.purchased).length;
+  const available = child.items.length - purchased;
+  const visibleItems = child.items
+    .filter(item => filter === "all" || (filter === "purchased" ? item.purchased : !item.purchased))
+    .sort((first, second) => Number(first.purchased) - Number(second.purchased));
+  const filters = [
+    { value: "all", label: "All", count: child.items.length },
+    { value: "available", label: "Available", count: available },
+    { value: "purchased", label: "Purchased", count: purchased },
+  ] as const;
+
+  return (
+    <li className="child" aria-labelledby={`child-name-${child.id}`} onSubmitCapture={event => {
+      if (event.target instanceof HTMLFormElement && new FormData(event.target).get("intent") === "set-purchased") {
+        purchaseSubmitted.current = true;
+      }
+    }}>
+      <div className="child-header">
+        <div className="child-identity">
+          <span className="child-initial" aria-hidden="true">{Array.from(child.name.trim())[0]}</span>
+          <div>
+            <h3 id={`child-name-${child.id}`}>{child.name}</h3>
+            <p className="section-note">Age {child.age}</p>
+          </div>
+        </div>
+        {child.items.length > 0 && (
+          <div className={`child-progress${available === 0 ? " is-complete" : ""}`}>
+            <p aria-live="polite" aria-atomic="true">
+              {available === 0 ? <><Icon name="check" />All {purchased} {purchased === 1 ? "gift" : "gifts"} purchased</>
+                : <><strong>{purchased} of {child.items.length}</strong> purchased</>}
+            </p>
+            <progress value={purchased} max={child.items.length} aria-label={`Gifts purchased for ${child.name}`} />
+          </div>
+        )}
+      </div>
+      {child.items.length > 0 && (
+        <div className="wish-filters" role="group" aria-label={`Filter ${child.name}’s wishes`}>
+          {filters.map(({ value, label, count }) => (
+            <button key={value} ref={filter === value ? activeFilter : undefined} type="button" aria-pressed={filter === value} aria-controls={`child-wishes-${child.id}`} onClick={() => setFilter(value)}>
+              {label}<span>{count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div id={`child-wishes-${child.id}`}>
+        {visibleItems.length > 0 ? (
+          <ul className="child-wishes" aria-label={`${child.name}’s ${filter === "all" ? "" : `${filter} `}wishes`}>
+            {visibleItems.map(item => <WishCard key={item.id} item={item} mode="child" />)}
+          </ul>
+        ) : (
+          <div className="child-wishes-empty">
+            <Icon name={filter === "available" && child.items.length > 0 ? "check" : "gift"} />
+            <p>{child.items.length === 0 ? "No wishes yet."
+              : filter === "available" ? "Every wish is taken care of."
+              : "No gifts purchased yet."}</p>
+            <span>{child.items.length === 0 ? `Add a wish to help the group find a gift for ${child.name}.`
+              : filter === "available" ? "You can still add another wish below."
+              : "Choose an available wish and mark it when you’ve bought it."}</span>
+          </div>
+        )}
+      </div>
+      <AddWish values={values} resetValues={resetValues} childId={child.id} />
+    </li>
+  );
+}
+
 function LittleOnes({ children, values, resetValues }: { children: DashboardData["children"]; values: Values; resetValues?: Values }) {
   const fields = fieldsFor(values, "add-child");
   return (
     <section className="dashboard-section" id="little-ones" aria-labelledby="little-ones-heading" tabIndex={-1}>
       <SectionHeading id="little-ones-heading" icon="users" title="Little Ones">
-        Everyone in the group can add wishes and mark gifts as purchased.
+        Find a gift for each little one. Mark it purchased to help the group avoid duplicates.
       </SectionHeading>
       {children.length === 0 && <p className="empty-line">Add a child to start their wish list.</p>}
       <ul className="child-list">
         {children.map(child => (
-          <li className="child" key={child.id}>
-            <h3>{child.name} <span className="section-note">Age {child.age}</span></h3>
-            <WishList items={child.items} mode="child" empty="No wishes yet." />
-            <AddWish values={values} resetValues={resetValues} childId={child.id} />
-          </li>
+          <ChildWishList key={child.id} child={child} values={values} resetValues={resetValues} />
         ))}
       </ul>
       <details className="action-detail" open={Boolean(fields) || undefined}>
@@ -1079,7 +1166,7 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
   const resetValues = message ? submitted : undefined;
   const feedback = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (error || message) feedback.current?.focus();
+    if (error || (message && submitted.intent !== "set-purchased")) feedback.current?.focus();
   }, [error, message, submitted]);
 
   return (

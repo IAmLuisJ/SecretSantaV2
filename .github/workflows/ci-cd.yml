@@ -121,14 +121,16 @@ jobs:
           : "${CLOUDFLARE_ACCOUNT_ID:?Set the production CLOUDFLARE_ACCOUNT_ID variable}"
           : "${CLOUDFLARE_API_TOKEN:?Set the production CLOUDFLARE_API_TOKEN secret}"
           : "${BETTER_AUTH_SECRET:?Set the production BETTER_AUTH_SECRET secret}"
-          : "${RESEND_API_KEY:?Set the production RESEND_API_KEY secret}"
           secrets_dir=$(mktemp -d "$RUNNER_TEMP/worker-secrets.XXXXXX")
           secrets_file="$secrets_dir/secrets.json"
           trap 'rm -f "$secrets_file"; rmdir "$secrets_dir"' EXIT
           node --input-type=module -e '
             import { writeFileSync } from "node:fs";
             const { BETTER_AUTH_SECRET, RESEND_API_KEY } = process.env;
-            writeFileSync(process.argv[1], JSON.stringify({ BETTER_AUTH_SECRET, RESEND_API_KEY }));
+            // cf deploy retains existing Worker secrets omitted from this file.
+            const workerSecrets = { BETTER_AUTH_SECRET };
+            if (RESEND_API_KEY) workerSecrets.RESEND_API_KEY = RESEND_API_KEY;
+            writeFileSync(process.argv[1], JSON.stringify(workerSecrets));
           ' "$secrets_file"
           npx cf d1 migrations apply "$SANTA_D1_ID" --dir migrations
-          npx cf deploy --prebuilt --mode production --secrets-file "$secrets_file"
+          npx cf deploy --prebuilt --mode production --secrets-file "$secrets_file" --message "Deploy GitHub main $GITHUB_SHA"
