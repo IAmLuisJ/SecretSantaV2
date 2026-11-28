@@ -184,6 +184,26 @@ test("overlapping schedulers do not duplicate reminders, and repeats wait three 
   assert.equal(await queueWishlistReminders(env), 0);
 });
 
+for (const status of ["pending", "sent", "cancelled"] as const) {
+  test(`a redraw's first reminders are not delayed by ${status} reminders from its previous draw`, async (t) => {
+    const { env, sqlite, rows } = setup(t);
+    assert.equal(await queueWishlistReminders(env), 2);
+    sqlite.prepare("UPDATE email_outbox SET status = ?, sent_at = CASE WHEN ? = 'sent' THEN unixepoch() END")
+      .run(status, status);
+    sqlite.exec(`
+      INSERT INTO draws (id, group_id, season_id, revision, request_key)
+        VALUES ('redraw', 'family', 'season', 0, 'redraw');
+      UPDATE draws SET created_at = unixepoch() - 86401 WHERE id = 'redraw';
+      INSERT INTO assignments (draw_id, season_id, giver_id, recipient_id) VALUES
+        ('redraw', 'season', 'a', 'b'), ('redraw', 'season', 'b', 'a');
+      UPDATE seasons SET active_draw_id = 'redraw';
+    `);
+    assert.equal(await queueWishlistReminders(env), 2);
+    assert.equal(rows().filter(row => row.draw_id === "redraw").length, 2);
+    assert.equal(await queueWishlistReminders(env), 0);
+  });
+}
+
 test("opt-out is account-wide, cancels queued reminders, and can be reversed", async (t) => {
   const { env, sqlite, rows } = setup(t);
   sqlite.exec(`

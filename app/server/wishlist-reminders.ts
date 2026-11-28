@@ -37,6 +37,7 @@ const eligibleRecipients = `
     AND NOT EXISTS (
       SELECT 1 FROM email_outbox e
       WHERE e.kind = 'wishlist-reminder' AND e.reminder_member_id = m.id
+        AND e.draw_id = d.id
         AND (e.status = 'pending' OR max(e.created_at, coalesce(e.sent_at, 0), coalesce(e.first_attempt_at, 0))
           > unixepoch() - ${reminderInterval})
     )
