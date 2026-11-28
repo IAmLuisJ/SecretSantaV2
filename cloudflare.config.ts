@@ -13,6 +13,10 @@ export default defineConfig(({ mode }) => {
   const origin = remote ? required("SANTA_APP_ORIGIN") : `http://127.0.0.1:${process.env.SANTA_LOCAL_PORT ?? "5173"}`;
   const emailSignIn = process.env.SANTA_EMAIL_SIGN_IN_ENABLED?.trim().toLowerCase() !== "false";
   const sender = process.env.SANTA_MAIL_FROM?.trim();
+  const commit = remote ? required("SANTA_BUILD_COMMIT") : process.env.SANTA_BUILD_COMMIT ?? "local";
+  if (remote && !/^[a-f0-9]{40}$/i.test(commit)) {
+    throw new Error("SANTA_BUILD_COMMIT must be the full commit SHA of the release.");
+  }
   if (remote && (new URL(origin).protocol !== "https:" || new URL(origin).origin !== origin)) {
     throw new Error("SANTA_APP_ORIGIN must be an HTTPS origin without a trailing slash.");
   }
@@ -27,6 +31,8 @@ export default defineConfig(({ mode }) => {
         DB: bindings.d1({ id: remote ? required("SANTA_D1_ID") : localDatabase }),
         PHOTOS: bindings.r2({ name: remote ? required("SANTA_R2_BUCKET") : "secret-santa-v2-local" }),
         APP_ORIGIN: bindings.text(origin),
+        BUILD_COMMIT: bindings.text(commit),
+        WORKER_VERSION: bindings.versionMetadata(),
         BETTER_AUTH_SECRET: bindings.secret(),
         EMAIL_SIGN_IN_ENABLED: bindings.text(String(emailSignIn)),
         ...(remote && sender ? { MAIL_FROM: bindings.text(sender) } : {}),

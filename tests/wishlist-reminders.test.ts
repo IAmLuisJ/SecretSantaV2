@@ -124,7 +124,7 @@ function setup(t: TestContext) {
   const rows = () => fixture.sqlite.prepare("SELECT * FROM email_outbox WHERE kind = 'wishlist-reminder' ORDER BY reminder_member_id, created_at").all();
   const addWish = (memberId = "a") => fixture.sqlite.prepare(`
     INSERT INTO gift_items (id, group_id, owner_id, name, description, url, created_at)
-    VALUES (?, 'family', ?, 'A book', '', '', unixepoch())
+    VALUES (?, 'family', (SELECT user_id FROM memberships WHERE id = ?), 'A book', '', '', unixepoch())
   `).run(crypto.randomUUID(), memberId);
   const sends: Array<{ to: string[]; text: string; headers?: Record<string, string> }> = [];
   const intercept = (provider: () => Response = () => Response.json({ id: crypto.randomUUID() })) => {
@@ -399,4 +399,35 @@ test("reminder delivery retries preserve the payload and stop if the wishlist is
   await processOutbox(env);
   assert.equal(sends.length, 4);
   assert.ok(rows().every(row => row.status === "cancelled"));
+});
+
+test("a shared wish from another exchange prevents empty-list reminders", async t => {
+  const { env, sqlite, addWish, rows } = setup(t);
+  addWish("b");
+  sqlite.exec(`
+    INSERT INTO groups VALUES ('friends', 'Friends', '', 'BBBBBBBBBBBBBBBB');
+    INSERT INTO memberships VALUES ('a-friends', 'friends', 'alex', 'alex@example.test', 'Alex', 'organizer');
+    INSERT INTO gift_items (id, owner_id, name, description, url, created_at)
+      VALUES ('shared-book', 'alex', 'Shared book', '', '', 0);
+  `);
+  assert.equal(await queueWishlistReminders(env), 0);
+  assert.equal(rows().length, 0);
+});
+
+test("a wish private to another exchange still permits reminders until it is shared, then cancels delivery", async t => {
+  const { env, sqlite, addWish, rows, intercept, sends } = setup(t);
+  addWish("b");
+  sqlite.exec(`
+    INSERT INTO groups VALUES ('friends', 'Friends', '', 'BBBBBBBBBBBBBBBB');
+    INSERT INTO memberships VALUES ('a-friends', 'friends', 'alex', 'alex@example.test', 'Alex', 'organizer');
+    INSERT INTO gift_items (id, group_id, owner_id, name, description, url, created_at)
+      VALUES ('friends-book', 'friends', 'alex', 'Friends book', '', '', 0);
+  `);
+  assert.equal(await queueWishlistReminders(env), 1);
+  assert.equal(rows()[0]?.reminder_member_id, "a");
+  sqlite.exec("UPDATE gift_items SET group_id = NULL WHERE id = 'friends-book'");
+  intercept();
+  await processOutbox(env);
+  assert.equal(sends.length, 0);
+  assert.equal(rows()[0]?.status, "cancelled");
 });

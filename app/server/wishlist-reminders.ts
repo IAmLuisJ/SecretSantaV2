@@ -33,7 +33,7 @@ const eligibleRecipients = `
   WHERE s.completed = 0 AND u.emailVerified = 1 AND u.wishlist_reminders_enabled = 1
     AND s.id = (SELECT id FROM seasons WHERE group_id = s.group_id ORDER BY year DESC LIMIT 1)
     AND max(d.created_at, coalesce(d.release_at, d.created_at)) + ${firstReminderDelay} <= unixepoch()
-    AND NOT EXISTS (SELECT 1 FROM gift_items WHERE owner_id = m.id)
+    AND NOT EXISTS (SELECT 1 FROM gift_items WHERE owner_id = m.user_id AND (group_id IS NULL OR group_id = m.group_id))
     AND NOT EXISTS (
       SELECT 1 FROM email_outbox e
       WHERE e.kind = 'wishlist-reminder' AND e.reminder_member_id = m.id

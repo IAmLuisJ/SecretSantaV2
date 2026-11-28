@@ -54,10 +54,19 @@ export type GiftItem = {
   description: string;
   url: string;
   photoUrl: string | null;
-  purchased: boolean;
+  purchased?: boolean;
+  scope: "shared" | "exchange";
+  canManage: boolean;
 };
 
-export type Child = { id: string; name: string; age: number; items: GiftItem[] };
+export type Child = {
+  id: string;
+  name: string;
+  age: number;
+  canManage: boolean;
+  canClaim: boolean;
+  items: GiftItem[];
+};
 
 export type DashboardData = {
   exchange: Exchange;
@@ -66,6 +75,7 @@ export type DashboardData = {
   recipientAddress: Address | null;
   recipientItems: GiftItem[];
   children: Child[];
+  reusableChildren: { id: string; name: string; age: number }[];
   inviteUrl: string;
   mailEnabled: boolean;
   requestId: string;

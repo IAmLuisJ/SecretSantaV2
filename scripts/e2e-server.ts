@@ -11,6 +11,7 @@ const env = {
   ...process.env,
   SANTA_LOCAL_STATE: directory,
   SANTA_LOCAL_PORT: port,
+  SANTA_BUILD_COMMIT: "0123456789abcdef0123456789abcdef01234567",
   X_LOCAL_EXPLORER: "true",
   BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
   FORCE_COLOR: "0",

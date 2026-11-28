@@ -38,3 +38,6 @@ Playwright starts its own dev server on `127.0.0.1:5197` by default and applies 
 2. For schema changes, add a new numbered SQL file in `migrations/`. Keep applied migrations intact and verify the change on a fresh local database and an existing one. The local migration command is `npm run db:local`.
 3. Update the docs in the same PR. Update the [README](README.md) when features or deployment change, the [quickstart](QUICKSTART.md) when setup or the first exchange changes, and this guide when checks or contributor workflows change.
 4. Open the PR against `main` with a brief summary, the checks you ran, and screenshots for visible changes. The [CI/CD workflow](.github/workflows/ci-cd.yml) runs TypeScript, Vitest, and both browser suites, and uploads Playwright reports for failures.
+5. Wait for required checks before merging. Let CI/CD apply migrations and deploy the merged commit, then confirm `/heartbeat` reports that commit and a Cloudflare version. The pipeline performs this release check automatically.
+
+Direct deployment is a fallback when CI/CD cannot release. Keep the changes in a PR, record the pipeline failure or unavailability, run the checks locally, and follow the [direct deployment fallback](README.md#direct-deployment-fallback). Build from a committed revision and validate its heartbeat after deployment.

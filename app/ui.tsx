@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Form, Link, useLocation, useNavigation, type FormProps } from "react-router";
 import { DrawPartyCountdown, useDrawStatusRefresh } from "./draw-party";
+import { useWishlistRefresh } from "./wishlist-refresh";
 import { elfMailIntents, elfMailPrompts, maxElfMailLength, type ElfMail, type ElfMailMessage } from "./elf-mail";
 import { ChristmasTree, HolidayStar, WrappedGift } from "./holiday-art";
 import { maxPasswordLength, minPasswordLength } from "./password";
@@ -359,7 +360,18 @@ function WishList({ items, mode, empty }: {
   );
 }
 
-function AddWish({ values, resetValues, childId }: { values: Values; resetValues?: Values; childId?: string }) {
+function WishScopeField({ scope = "shared", child = false }: { scope?: GiftItem["scope"]; child?: boolean }) {
+  return (
+    <label>Show this wish in
+      <select name="scope" defaultValue={scope}>
+        <option value="shared">{child ? "All of this Little One’s exchanges" : "All my exchanges"}</option>
+        <option value="exchange">Only this exchange</option>
+      </select>
+    </label>
+  );
+}
+
+function AddWish({ values, resetValues, childId, canShare = true }: { values: Values; resetValues?: Values; childId?: string; canShare?: boolean }) {
   const submitted = fieldsFor(values, "add-item");
   const fields = (submitted?.childId || undefined) === childId ? submitted : undefined;
   const saved = fieldsFor(resetValues, "add-item");
@@ -372,6 +384,17 @@ function AddWish({ values, resetValues, childId }: { values: Values; resetValues
         <label>Item name
           <input name="name" defaultValue={fields?.name} maxLength={140} required />
         </label>
+        {canShare ? (
+          <div>
+            <WishScopeField scope={fields?.scope === "exchange" ? "exchange" : "shared"} child={Boolean(childId)} />
+            <p className="field-note">Shared wishes keep the same purchase status across exchanges.</p>
+          </div>
+        ) : (
+          <>
+            <input type="hidden" name="scope" value="exchange" />
+            <p className="field-note">This wish will only appear in this exchange. Their list manager can share wishes across exchanges.</p>
+          </>
+        )}
         <label>Description <span className="optional">(optional)</span>
           <textarea name="description" rows={2} defaultValue={fields?.description} maxLength={1000} />
         </label>
@@ -676,8 +699,29 @@ function Recipient({ data, values, resetValues, pendingReleaseAt }: Pick<Dashboa
   );
 }
 
-function WishCard({ item, mode }: { item: GiftItem; mode: "adult" | "child" | "recipient" }) {
-  const purchased = mode === "child" && item.purchased;
+function WishSharing({ item, child, canShare }: { item: GiftItem; child: boolean; canShare: boolean }) {
+  return (
+    <div className="wish-sharing">
+      <span className="wish-scope"><Icon name={item.scope === "shared" ? "share" : "gift"} />
+        {item.scope === "shared" ? "Shared across exchanges" : "Only this exchange"}
+      </span>
+      {item.canManage && canShare && (
+        <details className="wish-sharing-editor">
+          <summary>Change sharing<span className="visually-hidden">: {item.name}</span></summary>
+          <ActionForm intent="set-item-scope" className="form-stack">
+            <input type="hidden" name="itemId" value={item.id} />
+            <WishScopeField key={item.scope} scope={item.scope} child={child} />
+            <Submit intent="set-item-scope" appearance="button-secondary">Save sharing</Submit>
+          </ActionForm>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function WishCard({ item, mode, canShare = true }: { item: GiftItem; mode: "adult" | "child" | "recipient"; canShare?: boolean }) {
+  const showPurchases = mode !== "adult";
+  const purchased = showPurchases && item.purchased;
   return (
     <li className={`wish-card${purchased ? " is-purchased" : ""}`}>
       <div className="wish-card-main">
@@ -691,14 +735,15 @@ function WishCard({ item, mode }: { item: GiftItem; mode: "adult" | "child" | "r
           {item.description && <p className="wish-card-description multiline">{item.description}</p>}
           {item.url && <a className="product-link" href={item.url} target="_blank" rel="noreferrer">View product <Icon name="arrow" /></a>}
         </div>
-        {mode !== "recipient" && <ActionForm intent="delete-item" className="wish-card-remove">
+        {item.canManage && <ActionForm intent="delete-item" className="wish-card-remove">
           <input type="hidden" name="itemId" value={item.id} />
           <Submit intent="delete-item" appearance="button-quiet">
             <Icon name="trash" /><span className="visually-hidden">Remove wish: {item.name}</span>
           </Submit>
         </ActionForm>}
       </div>
-      {mode === "child" && <div className="wish-card-footer">
+      <WishSharing item={item} child={mode === "child"} canShare={canShare} />
+      {showPurchases && <div className="wish-card-footer">
         <span className="wish-card-status">
           {purchased && <span className="wish-card-status-icon"><Icon name="check" /></span>}
           {purchased ? "Purchased" : "Available"}
@@ -774,7 +819,7 @@ function ChildWishList({ child, values, resetValues }: { child: DashboardData["c
       <div id={`child-wishes-${child.id}`}>
         {visibleItems.length > 0 ? (
           <ul className="child-wishes" aria-label={`${child.name}’s ${filter === "all" ? "" : `${filter} `}wishes`}>
-            {visibleItems.map(item => <WishCard key={item.id} item={item} mode="child" />)}
+            {visibleItems.map(item => <WishCard key={item.id} item={item} mode="child" canShare={child.canManage} />)}
           </ul>
         ) : (
           <div className="child-wishes-empty">
@@ -788,17 +833,33 @@ function ChildWishList({ child, values, resetValues }: { child: DashboardData["c
           </div>
         )}
       </div>
-      <AddWish values={values} resetValues={resetValues} childId={child.id} />
+      <AddWish values={values} resetValues={resetValues} childId={child.id} canShare={child.canManage} />
+      {child.canClaim && (
+        <details className="action-detail">
+          <summary>Use this list in other exchanges</summary>
+          <p>This list was created before shared wish lists. Choose to manage it, then reuse this Little One in your other exchanges.</p>
+          <ActionForm intent="claim-child">
+            <input type="hidden" name="childId" value={child.id} />
+            <Submit intent="claim-child" appearance="button-secondary">Manage shared list</Submit>
+          </ActionForm>
+        </details>
+      )}
     </li>
   );
 }
 
-function LittleOnes({ children, values, resetValues }: { children: DashboardData["children"]; values: Values; resetValues?: Values }) {
+function LittleOnes({ children, reusableChildren, values, resetValues }: {
+  children: DashboardData["children"];
+  reusableChildren: DashboardData["reusableChildren"];
+  values: Values;
+  resetValues?: Values;
+}) {
   const fields = fieldsFor(values, "add-child");
+  const linkFields = fieldsFor(values, "link-child");
   return (
     <section className="dashboard-section" id="little-ones" aria-labelledby="little-ones-heading" tabIndex={-1}>
       <SectionHeading id="little-ones-heading" icon="users" title="Little Ones">
-        Find a gift for each little one. Mark it purchased to help the group avoid duplicates.
+        Find a gift for each little one. Shared wishes track purchases across their exchanges.
       </SectionHeading>
       {children.length === 0 && <p className="empty-line">Add a child to start their wish list.</p>}
       <ul className="child-list">
@@ -806,6 +867,21 @@ function LittleOnes({ children, values, resetValues }: { children: DashboardData
           <ChildWishList key={child.id} child={child} values={values} resetValues={resetValues} />
         ))}
       </ul>
+      {reusableChildren.length > 0 && (
+        <details className="action-detail" open={Boolean(linkFields) || undefined}>
+          <summary>Use an existing Little One</summary>
+          <p>Bring their shared wishes into this exchange. Wishes kept in another exchange stay there.</p>
+          <ActionForm intent="link-child" className="form-stack">
+            <label>Little One
+              <select name="childId" defaultValue={linkFields?.childId ?? ""} required>
+                <option value="" disabled>Choose a Little One</option>
+                {reusableChildren.map(child => <option key={child.id} value={child.id}>{child.name} (age {child.age})</option>)}
+              </select>
+            </label>
+            <Submit intent="link-child" appearance="button-secondary">Use this Little One</Submit>
+          </ActionForm>
+        </details>
+      )}
       <details className="action-detail" open={Boolean(fields) || undefined}>
         <summary>Add a child</summary>
         <ActionForm intent="add-child" className="form-stack" resetOn={fieldsFor(resetValues, "add-child")}>
@@ -1141,7 +1217,7 @@ function Organizer({ data, values, resetValues, drawLocked }: {
       {season && <SantaGuessControls season={season} drawPending={drawLocked} />}
       <details className="action-detail danger-detail" open={Boolean(fieldsFor(values, "delete-group")) || undefined}>
         <summary>Delete group</summary>
-        <p>This permanently deletes the group, its exchanges, addresses, and wish lists.</p>
+        <p>This permanently deletes the group, its exchanges, addresses, and exchange-specific wishes. Shared wishes remain in your other exchanges.</p>
         <ActionForm intent="delete-group" className="form-stack">
           <input type="hidden" name="groupId" value={data.exchange.group.id} />
           <label className="check-line">
@@ -1160,6 +1236,7 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
   const releaseAt = season?.drawReleaseAt;
   const pendingReleaseAt = releaseAt != null && releaseAt > readAt ? releaseAt : null;
   useDrawStatusRefresh(Boolean(season && !season.drawId), pendingReleaseAt !== null);
+  useWishlistRefresh();
   const inbox = data.elfMail.fromSanta;
   const organizer = self.role === "organizer";
   const values = error ? submitted : {};
@@ -1209,14 +1286,14 @@ export function Dashboard({ data, message, error, values: submitted }: Dashboard
             <div className="dashboard-columns">
               <section className="dashboard-section" id="wish-list" aria-labelledby="wish-list-heading" tabIndex={-1}>
                 <SectionHeading id="wish-list-heading" icon="gift" title="My wish list">
-                  Your assigned giver can see your latest wishes here.{season?.codenameMode && " Keep names and other clues out of your wishes, links, and photos."}
+                  Share wishes across your exchanges, or keep a wish just for this one. Only assigned givers see your purchase status.{season?.codenameMode && " Keep names and other clues out of your wishes, links, and photos."}
                 </SectionHeading>
                 <WishList items={data.items} mode="adult" empty="Add a wish to give your Secret Santa an idea." />
                 <AddWish values={values} resetValues={resetValues} />
                 <AddressEditor address={data.address} values={values} resetValues={resetValues} />
                 <p className="section-note"><Link to="/wishlist-reminders">Manage wishlist email reminders</Link></p>
               </section>
-              <LittleOnes children={data.children} values={values} resetValues={resetValues} />
+              <LittleOnes children={data.children} reusableChildren={data.reusableChildren} values={values} resetValues={resetValues} />
             </div>
             <Invitations group={group} inviteUrl={data.inviteUrl} mailEnabled={data.mailEnabled} values={values} resetValues={resetValues} />
             {organizer && <Organizer data={data} values={values} resetValues={resetValues} drawLocked={pendingReleaseAt !== null} />}

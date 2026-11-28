@@ -92,6 +92,7 @@ jobs:
       - run: npm ci
       - name: Build and validate the production Worker
         env:
+          SANTA_BUILD_COMMIT: ${{ github.sha }}
           SANTA_APP_ORIGIN: ${{ vars.SANTA_APP_ORIGIN }}
           SANTA_R2_BUCKET: ${{ vars.SANTA_R2_BUCKET }}
           SANTA_MAIL_FROM: ${{ vars.SANTA_MAIL_FROM }}
@@ -134,3 +135,8 @@ jobs:
           ' "$secrets_file"
           npx cf d1 migrations apply "$SANTA_D1_ID" --dir migrations
           npx cf deploy --prebuilt --mode production --secrets-file "$secrets_file" --message "Deploy GitHub main $GITHUB_SHA"
+      - name: Verify the deployed release
+        if: steps.revision.outputs.current == 'true'
+        env:
+          SANTA_APP_ORIGIN: ${{ vars.SANTA_APP_ORIGIN }}
+        run: node --experimental-strip-types scripts/verify-deployment.ts "$SANTA_APP_ORIGIN" "$GITHUB_SHA"

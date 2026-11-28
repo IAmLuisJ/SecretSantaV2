@@ -4,7 +4,9 @@ const origin = `http://127.0.0.1:${process.env.SANTA_LOCAL_PORT ?? "5197"}`;
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  testMatch: process.env.SANTA_EMAIL_SIGN_IN_ENABLED === "false" ? "password.spec.ts" : "exchange.spec.ts",
+  testMatch: process.env.SANTA_EMAIL_SIGN_IN_ENABLED === "false"
+    ? ["password.spec.ts", "heartbeat.spec.ts"]
+    : ["exchange.spec.ts", "heartbeat.spec.ts"],
   timeout: 90_000,
   workers: 1,
   use: { baseURL: origin, actionTimeout: 8_000, navigationTimeout: 15_000 },

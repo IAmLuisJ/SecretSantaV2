@@ -5,7 +5,8 @@ import { Miniflare } from "miniflare";
 import { test, vi, type TestContext } from "vitest";
 import type { Env } from "../app/env.ts";
 import { confirmAccountCode, mergeWithPassword, sendAccountCode } from "../app/server/account.ts";
-import { createGroup, getInvite, joinGroup, listExchanges } from "../app/server/exchange.ts";
+import { createGroup, getExchange, getInvite, joinGroup, listExchanges } from "../app/server/exchange.ts";
+import { getDashboard } from "../app/server/gifts.ts";
 
 const origin = "https://santa.example.test";
 const request = new Request(`${origin}/account`, { headers: { "CF-Connecting-IP": "192.0.2.17" } });
@@ -114,6 +115,14 @@ test("merging preserves the other account’s membership ID and invalidates its 
   const family = await createGroup(DB, primary.user, { name: "Family", year: 2026, description: "", displayName: "Jess" });
   const friends = await createGroup(DB, other.user, { name: "Friends", year: 2026, description: "", displayName: "Jessie" });
   const membership = await DB.prepare("SELECT id FROM memberships WHERE group_id = ?").bind(friends).first("id");
+  await DB.batch([
+    DB.prepare(`INSERT INTO gift_items (id, owner_id, group_id, name, description, url, purchased, created_at)
+      VALUES ('shared-wish', ?, NULL, 'Shared book', '', '', 1, 1)`).bind(other.user.id),
+    DB.prepare(`INSERT INTO gift_items (id, owner_id, group_id, name, description, url, created_at)
+      VALUES ('local-wish', ?, ?, 'Friends scarf', '', '', 2)`).bind(other.user.id, friends),
+    DB.prepare("INSERT INTO children (id, manager_id, name, age) VALUES ('robin', ?, 'Robin', 6)").bind(other.user.id),
+    DB.prepare("INSERT INTO child_exchanges (group_id, child_id) VALUES (?, 'robin')").bind(friends),
+  ]);
   const challenge = await sendAccountCode(request, env, primary, "merge-accounts", other.user.email);
 
   await confirmAccountCode(env, primary, "merge-accounts", challenge, codeFrom(sent.at(-1)));
@@ -125,6 +134,18 @@ test("merging preserves the other account’s membership ID and invalidates its 
   });
   assert.equal(await DB.prepare("SELECT id FROM session WHERE id = ?").bind(other.session.id).first(), null);
   assert.equal(await DB.prepare('SELECT id FROM "user" WHERE id = ?').bind(other.user.id).first(), null);
+  const familyExchange = await getExchange(DB, primary.user.id, family);
+  const friendsExchange = await getExchange(DB, primary.user.id, friends);
+  assert.ok(familyExchange && friendsExchange);
+  const familyDashboard = await getDashboard(DB, familyExchange, origin, primary.user.id);
+  const friendsDashboard = await getDashboard(DB, friendsExchange, origin, primary.user.id);
+  assert.deepEqual(familyDashboard.items.map(i => i.name), ["Shared book"]);
+  assert.deepEqual(friendsDashboard.items.map(i => i.name), ["Shared book", "Friends scarf"]);
+  assert.equal("purchased" in familyDashboard.items[0], false);
+  assert.equal(familyDashboard.reusableChildren[0]?.id, "robin");
+  assert.equal(friendsDashboard.children[0]?.canManage, true);
+  assert.equal(await DB.prepare("SELECT purchased FROM gift_items WHERE id = 'shared-wish'").first("purchased"), 1);
+  assert.deepEqual((await DB.prepare("PRAGMA foreign_key_check").all()).results, []);
 });
 
 test("a shared exchange blocks the entire merge", async (t) => {
@@ -136,12 +157,19 @@ test("a shared exchange blocks the entire merge", async (t) => {
   assert.ok(code && await getInvite(DB, code));
   await joinGroup(DB, other.user, code, "Jessie");
   const friends = await createGroup(DB, other.user, { name: "Friends", year: 2026, description: "", displayName: "Jessie" });
+  await DB.batch([
+    DB.prepare(`INSERT INTO gift_items (id, owner_id, name, description, url, created_at)
+      VALUES ('blocked-shared-wish', ?, 'Shared book', '', '', 1)`).bind(other.user.id),
+    DB.prepare("INSERT INTO children (id, manager_id, name, age) VALUES ('blocked-child', ?, 'Robin', 6)").bind(other.user.id),
+  ]);
   const challenge = await sendAccountCode(request, env, primary, "merge-accounts", other.user.email);
 
   await assert.rejects(confirmAccountCode(env, primary, "merge-accounts", challenge, codeFrom(sent.at(-1))), { status: 409 });
   assert.deepEqual((await listExchanges(DB, primary.user.id)).map(group => group.id), [family]);
   assert.deepEqual((await listExchanges(DB, other.user.id)).map(group => group.id), [family, friends]);
   assert.equal(await DB.prepare("SELECT id FROM session WHERE id = ?").bind(other.session.id).first("id"), other.session.id);
+  assert.equal(await DB.prepare("SELECT owner_id FROM gift_items WHERE id = 'blocked-shared-wish'").first("owner_id"), other.user.id);
+  assert.equal(await DB.prepare("SELECT manager_id FROM children WHERE id = 'blocked-child'").first("manager_id"), other.user.id);
 });
 
 test("an account code is bound to its session and operation and stops accepting guesses", async (t) => {
