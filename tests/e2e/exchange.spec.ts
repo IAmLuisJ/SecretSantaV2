@@ -125,6 +125,10 @@ async function addressAndWish(page: Page, name: string) {
   await wishes.locator('input[type="file"]').setInputFiles({ name: "wish.png", mimeType: "image/png", buffer: png });
   await wishes.getByRole("button", { name: "Add wish" }).click();
   await expect(wishes.getByText(`${name} wish`, { exact: true })).toBeVisible();
+  const card = wishes.locator(".wish-card").filter({ hasText: `${name} wish` });
+  await expect(card.getByRole("button", { name: `Remove wish: ${name} wish` })).toBeVisible();
+  await expect(card.getByRole("link", { name: "View product" })).toHaveAttribute("href", "https://example.com/gift");
+  await expect(card.getByRole("button", { name: "Mark as purchased" })).toHaveCount(0);
 }
 
 test("a Draw Party counts down and unlocks the private match for live and late arrivals", async ({ page, browser }) => {
@@ -257,7 +261,7 @@ test("one account can organize one group and join another", async ({ page, brows
     await page.getByRole("button", { name: "Join group" }).click();
     await expect(page.getByRole("heading", { name: "Friends exchange" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Organizer tools" })).toHaveCount(0);
-    await expect(page.locator("#wish-list").getByText("Family wish")).toHaveCount(0);
+    await expect(page.locator("#wish-list").getByText("Family wish", { exact: true })).toHaveCount(0);
     const friends = page.url();
     expect(friends).not.toBe(family);
     const friendMember = await page.locator('input[name="actingMembershipId"]').first().inputValue();
@@ -280,7 +284,7 @@ test("one account can organize one group and join another", async ({ page, brows
     await page.getByRole("link", { name: "Family exchange" }).click();
     await expect(page).toHaveURL(family);
     await expect(page.getByRole("heading", { name: "Organizer tools" })).toBeVisible();
-    await expect(page.locator("#wish-list").getByText("Family wish")).toBeVisible();
+    await expect(page.locator("#wish-list").getByText("Family wish", { exact: true })).toBeVisible();
 
     await myExchanges.click();
     await page.getByRole("link", { name: "Create an exchange" }).click();
@@ -529,6 +533,9 @@ test("a mobile group runs two private annual exchanges and shares Little Ones gi
     await child.getByLabel("Item name").fill("Train set");
     await child.getByRole("button", { name: "Add wish" }).click();
     await expect(child.getByText("Train set", { exact: true })).toBeVisible();
+    await child.getByLabel("Item name").fill("Art supplies");
+    await child.getByRole("button", { name: "Add wish" }).click();
+    await expect(child.getByText("Art supplies", { exact: true })).toBeVisible();
     const bailey = pages.get("Bailey")!;
     await bailey.reload();
     const actingMembershipId = await page.locator('input[name="actingMembershipId"]').first().inputValue();
@@ -537,10 +544,28 @@ test("a mobile group runs two private annual exchanges and shares Little Ones gi
       form: { intent: "add-child", actingMembershipId, name: "Stale child", age: "8" },
     });
     expect(stale.status()).toBe(409);
-    await bailey.getByRole("button", { name: "Mark as purchased" }).click();
-    await expect(bailey.getByRole("button", { name: "Mark as unpurchased" })).toBeVisible();
-    await bailey.getByRole("button", { name: "Mark as unpurchased" }).click();
-    await expect(bailey.getByRole("button", { name: "Mark as purchased" })).toBeVisible();
+    const baileyChild = bailey.locator("#little-ones .child");
+    const train = baileyChild.locator(".wish-card").filter({ hasText: "Train set" });
+    const filters = baileyChild.getByRole("group", { name: "Filter Robin’s wishes" });
+    await filters.getByRole("button", { name: "Available" }).click();
+    await train.getByRole("button", { name: "Mark as purchased" }).click();
+    await expect(baileyChild.locator(".child-progress")).toContainText("1 of 2 purchased");
+    await expect(baileyChild.getByRole("progressbar")).toHaveAttribute("value", "1");
+    await expect(filters.getByRole("button", { name: "Available" })).toHaveAttribute("aria-pressed", "true");
+    await expect(filters.getByRole("button", { name: "Available" })).toBeFocused();
+    await expect(train).toHaveCount(0);
+    await expect(baileyChild.locator(".wish-card")).toHaveCount(1);
+    await filters.getByRole("button", { name: "Purchased" }).click();
+    await expect(train).toBeVisible();
+    await expect(train).toHaveClass(/is-purchased/);
+    await expect(train.locator(".wish-card-name")).toHaveCSS("text-decoration-line", "line-through");
+    await expect(train.getByRole("button", { name: "Undo purchase: Train set" })).toBeVisible();
+    await bailey.reload();
+    await expect(train).toHaveClass(/is-purchased/);
+    await train.getByRole("button", { name: "Undo purchase: Train set" }).click();
+    await expect(train).not.toHaveClass(/is-purchased/);
+    await expect(train.getByRole("button", { name: "Mark as purchased" })).toBeVisible();
+    await expect(baileyChild.locator(".child-progress")).toContainText("0 of 2 purchased");
 
     await page.reload();
     await page.getByText("Block a pair", { exact: true }).click();
@@ -563,6 +588,10 @@ test("a mobile group runs two private annual exchanges and shares Little Ones gi
         if (giver === "Alex" || giver === "Bailey") expect(["Casey", "Drew"]).toContain(name);
         await expect(recipient.locator("address")).toContainText(`100 ${name} Lane`);
         await expect(recipient.getByText(`${name} wish`, { exact: true })).toBeVisible();
+        const wish = recipient.locator(".wish-card");
+        await expect(wish).toHaveCount(1);
+        await expect(wish.getByRole("link", { name: "View product" })).toBeVisible();
+        await expect(wish.getByRole("button")).toHaveCount(0);
         const photo = await recipient.locator("img").getAttribute("src");
         expect((await participant.request.get(photo!)).status()).toBe(200);
         if (giver === "Alex") {
