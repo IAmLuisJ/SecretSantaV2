@@ -261,7 +261,7 @@ test("one account can organize one group and join another", async ({ page, brows
     await page.getByRole("button", { name: "Join group" }).click();
     await expect(page.getByRole("heading", { name: "Friends exchange" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Organizer tools" })).toHaveCount(0);
-    await expect(page.locator("#wish-list").getByText("Family wish")).toHaveCount(0);
+    await expect(page.locator("#wish-list").getByText("Family wish", { exact: true })).toHaveCount(0);
     const friends = page.url();
     expect(friends).not.toBe(family);
     const friendMember = await page.locator('input[name="actingMembershipId"]').first().inputValue();
@@ -284,7 +284,7 @@ test("one account can organize one group and join another", async ({ page, brows
     await page.getByRole("link", { name: "Family exchange" }).click();
     await expect(page).toHaveURL(family);
     await expect(page.getByRole("heading", { name: "Organizer tools" })).toBeVisible();
-    await expect(page.locator("#wish-list").getByText("Family wish")).toBeVisible();
+    await expect(page.locator("#wish-list").getByText("Family wish", { exact: true })).toBeVisible();
 
     await myExchanges.click();
     await page.getByRole("link", { name: "Create an exchange" }).click();
